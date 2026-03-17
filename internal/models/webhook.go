@@ -9,6 +9,11 @@ type WebhookEvent struct {
 	ReceivedAt time.Time         `json:"received_at"`
 	RawBody    []byte            `json:"raw_body"`
 	Headers    map[string]string `json:"headers"`
+	// Phase 2: File processing fields
+	FileURL       string         `json:"file_url,omitempty"`
+	FileStorePath string         `json:"file_store_path,omitempty"`
+	ExtractedData map[string]any `json:"extracted_data,omitempty"`
+	ExtractionMs  int64          `json:"extraction_ms,omitempty"`
 }
 
 // DeliveryAttempt represents one attempt to deliver to one destination.

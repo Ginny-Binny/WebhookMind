@@ -40,14 +40,43 @@ type PostgresConfig struct {
 	DSN string
 }
 
+type MinIOConfig struct {
+	Endpoint         string
+	AccessKey        string
+	SecretKey        string
+	Bucket           string
+	UseSSL           bool
+	InternalEndpoint string // endpoint as seen from Docker containers
+}
+
+type ExtractorConfig struct {
+	GRPCAddr           string
+	GRPCTimeoutSeconds int
+}
+
+type FileConfig struct {
+	MaxSizeBytes           int64
+	DownloadTimeoutSeconds int
+}
+
+type ExtractorBridgeConfig struct {
+	Workers             int
+	MaxWorkers          int
+	QueueScaleThreshold int64
+}
+
 type Config struct {
-	Ingestion    IngestionConfig
-	Orchestrator OrchestratorConfig
-	Delivery     DeliveryConfig
-	Redis        RedisConfig
-	Scylla       ScyllaConfig
-	Postgres     PostgresConfig
-	LogLevel     slog.Level
+	Ingestion       IngestionConfig
+	Orchestrator    OrchestratorConfig
+	Delivery        DeliveryConfig
+	ExtractorBridge ExtractorBridgeConfig
+	Redis           RedisConfig
+	Scylla          ScyllaConfig
+	Postgres        PostgresConfig
+	MinIO           MinIOConfig
+	Extractor       ExtractorConfig
+	File            FileConfig
+	LogLevel        slog.Level
 }
 
 func Load() (*Config, error) {
@@ -89,6 +118,27 @@ func Load() (*Config, error) {
 		},
 		Postgres: PostgresConfig{
 			DSN: postgresDSN,
+		},
+		MinIO: MinIOConfig{
+			Endpoint:         envOrDefault("MINIO_ENDPOINT", "127.0.0.1:9000"),
+			AccessKey:        envOrDefault("MINIO_ACCESS_KEY", "webhookmind"),
+			SecretKey:        envOrDefault("MINIO_SECRET_KEY", "webhookmind123"),
+			Bucket:           envOrDefault("MINIO_BUCKET", "webhookmind-files"),
+			UseSSL:           envOrDefault("MINIO_USE_SSL", "false") == "true",
+			InternalEndpoint: envOrDefault("MINIO_INTERNAL_ENDPOINT", "host.docker.internal:9000"),
+		},
+		Extractor: ExtractorConfig{
+			GRPCAddr:           envOrDefault("EXTRACTOR_GRPC_ADDR", "127.0.0.1:50051"),
+			GRPCTimeoutSeconds: envOrDefaultInt("EXTRACTOR_GRPC_TIMEOUT_SECONDS", 120),
+		},
+		File: FileConfig{
+			MaxSizeBytes:           int64(envOrDefaultInt("FILE_MAX_SIZE_BYTES", 52428800)),
+			DownloadTimeoutSeconds: envOrDefaultInt("FILE_DOWNLOAD_TIMEOUT_SECONDS", 30),
+		},
+		ExtractorBridge: ExtractorBridgeConfig{
+			Workers:             envOrDefaultInt("EXTRACTOR_BRIDGE_WORKERS", 10),
+			MaxWorkers:          envOrDefaultInt("EXTRACTOR_BRIDGE_MAX_WORKERS", 50),
+			QueueScaleThreshold: int64(envOrDefaultInt("EXTRACTOR_BRIDGE_QUEUE_SCALE_THRESHOLD", 1000)),
 		},
 		LogLevel: parseLogLevel(envOrDefault("LOG_LEVEL", "info")),
 	}

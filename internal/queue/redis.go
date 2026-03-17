@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	QueueIncoming = "webhookmind:queue:incoming"
-	QueueDelivery = "webhookmind:queue:delivery"
-	QueueDLQ      = "webhookmind:dlq"
+	QueueIncoming   = "webhookmind:queue:incoming"
+	QueueDelivery   = "webhookmind:queue:delivery"
+	QueueExtraction = "webhookmind:queue:extraction"
+	QueueDLQ        = "webhookmind:dlq"
 )
 
 type RedisQueue struct {

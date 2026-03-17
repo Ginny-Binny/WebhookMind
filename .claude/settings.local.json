@@ -2,7 +2,23 @@
   "permissions": {
     "allow": [
       "Bash(go mod:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(protoc --version)",
+      "Bash(go install:*)",
+      "Bash(curl -sL -o protoc.zip \"https://github.com/protocolbuffers/protobuf/releases/download/v29.5/protoc-29.5-win64.zip\")",
+      "Bash(mkdir -p .protoc)",
+      "Bash(unzip -o protoc.zip -d .protoc)",
+      "Bash(rm protoc.zip)",
+      "Bash(mkdir -p internal/extraction/pb)",
+      "Bash(.protoc/bin/protoc.exe --go_out=. --go-grpc_out=. --proto_path=proto proto/extraction.proto)",
+      "Bash(mv github.com/gauravfs-14/webhookmind/internal/extraction/pb/*.go internal/extraction/pb/)",
+      "Bash(rm -rf github.com)",
+      "Bash(.protoc/bin/protoc.exe --go_out=. --go_opt=module=github.com/gauravfs-14/webhookmind --go-grpc_out=. --go-grpc_opt=module=github.com/gauravfs-14/webhookmind --proto_path=proto proto/extraction.proto)",
+      "Bash(go get:*)",
+      "Bash(go build:*)",
+      "Bash(docker build:*)",
+      "Bash(docker rm:*)",
+      "Bash(docker run:*)"
     ]
   }
 }

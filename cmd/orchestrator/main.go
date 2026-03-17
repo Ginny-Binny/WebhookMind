@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -72,21 +73,41 @@ func main() {
 					continue
 				}
 
-				if err := redisQueue.Enqueue(ctx, queue.QueueDelivery, event); err != nil {
-					logger.Error("failed to enqueue to delivery",
+				// Detect file_url in payload to route to extraction queue.
+				targetQueue := queue.QueueDelivery
+				var payload map[string]interface{}
+				if err := json.Unmarshal(event.RawBody, &payload); err == nil {
+					if fileURL, ok := payload["file_url"].(string); ok && fileURL != "" {
+						event.FileURL = fileURL
+						targetQueue = queue.QueueExtraction
+					}
+				}
+
+				if err := redisQueue.Enqueue(ctx, targetQueue, event); err != nil {
+					logger.Error("failed to enqueue event",
 						"worker_id", workerID,
 						"event_id", event.ID,
 						"source_id", event.SourceID,
+						"target_queue", targetQueue,
 						"error", err,
 					)
 					continue
 				}
 
-				logger.Debug("event routed to delivery",
-					"worker_id", workerID,
-					"event_id", event.ID,
-					"source_id", event.SourceID,
-				)
+				if targetQueue == queue.QueueExtraction {
+					logger.Debug("event routed to extraction",
+						"worker_id", workerID,
+						"event_id", event.ID,
+						"source_id", event.SourceID,
+						"file_url", event.FileURL,
+					)
+				} else {
+					logger.Debug("event routed to delivery",
+						"worker_id", workerID,
+						"event_id", event.ID,
+						"source_id", event.SourceID,
+					)
+				}
 			}
 		}(id)
 	}

@@ -23,6 +23,9 @@
 .DS_Store
 Thumbs.db
 
+# Local tools
+.protoc/
+
 # Docker volumes
 data/
 

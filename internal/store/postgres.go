@@ -143,6 +143,76 @@ func (s *PostgresStore) GetIncompleteDeliveries(ctx context.Context) ([]Incomple
 	return results, nil
 }
 
+func (s *PostgresStore) InsertExtractionRecord(ctx context.Context, record *models.ExtractionRecord) error {
+	extractedJSON, err := json.Marshal(record.ExtractedData)
+	if err != nil {
+		return fmt.Errorf("marshal extracted data: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO extraction_records (event_id, source_id, file_url, minio_path, file_type, template_id, cache_hit, extracted_data, duration_ms, success, error_message)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		record.EventID,
+		record.SourceID,
+		record.FileURL,
+		record.MinIOPath,
+		record.FileType,
+		record.TemplateID,
+		record.CacheHit,
+		extractedJSON,
+		record.DurationMs,
+		record.Success,
+		record.ErrorMessage,
+	)
+	if err != nil {
+		return fmt.Errorf("insert extraction record: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpsertTemplate(ctx context.Context, tmpl *models.Template) error {
+	fieldMapJSON, err := json.Marshal(tmpl.FieldPositionMap)
+	if err != nil {
+		return fmt.Errorf("marshal field position map: %w", err)
+	}
+
+	_, err = s.pool.Exec(ctx,
+		`INSERT INTO templates (template_id, source_id, file_type, field_position_map, sample_event_id, confidence_score)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (template_id) DO UPDATE SET
+		   use_count = templates.use_count + 1,
+		   updated_at = NOW()`,
+		tmpl.TemplateID,
+		tmpl.SourceID,
+		tmpl.FileType,
+		fieldMapJSON,
+		tmpl.SampleEventID,
+		tmpl.ConfidenceScore,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert template: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) GetTemplate(ctx context.Context, templateID string) (*models.Template, error) {
+	var tmpl models.Template
+	var fieldMapJSON []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT template_id, source_id, file_type, field_position_map, sample_event_id, confidence_score, use_count, created_at, updated_at
+		 FROM templates WHERE template_id = $1`, templateID).
+		Scan(&tmpl.TemplateID, &tmpl.SourceID, &tmpl.FileType, &fieldMapJSON, &tmpl.SampleEventID, &tmpl.ConfidenceScore, &tmpl.UseCount, &tmpl.CreatedAt, &tmpl.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get template: %w", err)
+	}
+
+	if err := json.Unmarshal(fieldMapJSON, &tmpl.FieldPositionMap); err != nil {
+		return nil, fmt.Errorf("unmarshal field position map: %w", err)
+	}
+
+	return &tmpl, nil
+}
+
 func (s *PostgresStore) Close() {
 	s.pool.Close()
 }
