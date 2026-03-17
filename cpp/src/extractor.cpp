@@ -1,8 +1,10 @@
 #include "extractor.h"
 #include "pdf_handler.h"
 #include "ocr_handler.h"
+#include "audio_handler.h"
 #include "fingerprinter.h"
 #include "template_cache.h"
+#include "llm_labeler.h"
 
 #include <curl/curl.h>
 #include <fstream>
@@ -77,12 +79,22 @@ static std::string blocks_to_json(const std::vector<TextBlock>& blocks) {
     return oss.str();
 }
 
+// Helper to build raw text from blocks.
+static std::string blocks_to_raw_text(const std::vector<TextBlock>& blocks) {
+    std::string text;
+    for (const auto& b : blocks) {
+        text += b.text + " ";
+    }
+    return text;
+}
+
 ExtractionResult extract_document(
     const std::string& file_path,
     const std::string& file_type,
     const std::string& source_id,
     const std::string& presigned_url,
-    const std::string& redis_addr
+    const std::string& redis_addr,
+    LLMLabeler* labeler
 ) {
     ExtractionResult result;
     result.success = false;
@@ -108,6 +120,27 @@ ExtractionResult extract_document(
         blocks = extract_pdf(tmp_path);
     } else if (file_type == "image") {
         blocks = extract_image(tmp_path);
+    } else if (file_type == "audio") {
+        auto transcription = transcribe_audio(tmp_path);
+        if (!transcription.success) {
+            result.error_message = transcription.error_message;
+            std::remove(tmp_path.c_str());
+            return result;
+        }
+        // For audio, use LLM to extract entities from transcription text.
+        if (labeler && labeler->is_loaded() && !transcription.full_text.empty()) {
+            std::string labeled = labeler->LabelFields(transcription.full_text, {}, "audio");
+            if (!labeled.empty()) {
+                result.extracted_json = labeled;
+            } else {
+                result.extracted_json = "{\"transcription\":\"" + transcription.full_text + "\"}";
+            }
+        } else {
+            result.extracted_json = "{\"transcription\":\"" + transcription.full_text + "\"}";
+        }
+        result.success = true;
+        std::remove(tmp_path.c_str());
+        return result;
     } else {
         result.error_message = "unsupported file type: " + file_type;
         std::remove(tmp_path.c_str());
@@ -139,8 +172,18 @@ ExtractionResult extract_document(
         }
     }
 
-    // Cache miss: return raw text (Phase 3 adds Llama.cpp for field labeling).
-    result.extracted_json = blocks_to_json(blocks);
+    // Cache miss: use LLM for structured field labeling if available.
+    if (labeler && labeler->is_loaded()) {
+        std::string raw = blocks_to_raw_text(blocks);
+        std::string labeled = labeler->LabelFields(raw, blocks, file_type);
+        if (!labeled.empty()) {
+            result.extracted_json = labeled;
+        } else {
+            result.extracted_json = blocks_to_json(blocks); // fallback
+        }
+    } else {
+        result.extracted_json = blocks_to_json(blocks); // fallback
+    }
     result.success = true;
 
     // Store in cache for next time.

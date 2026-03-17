@@ -18,7 +18,29 @@
       "Bash(go build:*)",
       "Bash(docker build:*)",
       "Bash(docker rm:*)",
-      "Bash(docker run:*)"
+      "Bash(docker run:*)",
+      "Read(//c/opt/models/**)",
+      "Read(//c//**)",
+      "Bash(dir \"C:\\\\opt\\\\models\")",
+      "Bash(powershell.exe -Command \"Get-ChildItem C:\\\\opt\\\\models -ErrorAction SilentlyContinue\")",
+      "Bash(powershell.exe -Command \"docker exec webhookmind-extractor ls /opt/models/\")",
+      "Bash(powershell.exe -Command \"docker logs webhookmind-extractor 2>&1 | Select-Object -Last 5\")",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"ORD-DRIFT\"\", \"\"amount\"\": \"\"not_a_number\"\", \"\"new_field\"\": \"\"surprise\"\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"DIFF-1\"\", \"\"amount\"\": 500, \"\"status\"\": \"\"pending\"\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"DIFF-2\"\", \"\"amount\"\": 750, \"\"status\"\": \"\"completed\"\", \"\"notes\"\": \"\"urgent\"\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"DIFF-A\"\", \"\"amount\"\": 999, \"\"status\"\": \"\"new\"\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"DIFF-B\"\", \"\"amount\"\": 1500, \"\"status\"\": \"\"done\"\", \"\"extra\"\": true}')",
+      "Bash(curl -s -X POST http://localhost:8082/api/sources/test-source/rules -H \"Content-Type: application/json\" -d '{\"\"destination_id\"\": \"\"722871fd-fd63-476b-aa2e-1f8672a16ad6\"\", \"\"name\"\": \"\"High Value Route\"\", \"\"priority\"\": 1, \"\"logic_operator\"\": \"\"AND\"\", \"\"conditions\"\": [{\"\"field\"\": \"\"amount\"\", \"\"operator\"\": \"\"gt\"\", \"\"value\"\": 50000}]}')",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"BIG-1\"\", \"\"amount\"\": 75000, \"\"customer\"\": \"\"Enterprise Corp\"\"}')",
+      "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"order_id\"\": \"\"SMALL-1\"\", \"\"amount\"\": 100, \"\"customer\"\": \"\"Small Biz\"\"}')",
+      "Bash(time curl:*)",
+      "Bash(curl -s -X POST http://localhost:8082/api/sources/test-source/replay -H \"Content-Type: application/json\" -d '{\"\"destination_url\"\": \"\"https://httpbin.org/post\"\", \"\"from_timestamp\"\": \"\"2026-03-17T00:00:00Z\"\", \"\"initiated_by\"\": \"\"test\"\"}')",
+      "Bash(curl -s http://localhost:8082/api/replay/f329711d-c616-47a8-b5d4-354a58318154)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -X POST http://localhost:8082/api/sources/test-source/replay -H \"Content-Type: application/json\" -d '{\"\"destination_url\"\": \"\"https://httpbin.org/post\"\", \"\"from_timestamp\"\": \"\"2026-03-17T00:00:00Z\"\", \"\"initiated_by\"\": \"\"test2\"\"}')",
+      "Bash(curl -s http://localhost:8082/api/replay/ee83f779-56db-4027-a558-9e34039f5a58)",
+      "Bash(powershell.exe -Command \"docker exec webhookmind-extractor ls /app/cpp/build/\")",
+      "Bash(powershell.exe -Command \"docker exec webhookmind-extractor ls /app/cpp/build/vendor/\")"
     ]
   }
 }

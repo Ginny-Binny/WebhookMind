@@ -37,6 +37,18 @@ find_package(CURL REQUIRED)
 # OpenSSL for SHA-256
 find_package(OpenSSL REQUIRED)
 
+# Llama.cpp (if vendor directory exists)
+if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/llama.cpp/CMakeLists.txt")
+    set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    add_subdirectory(vendor/llama.cpp)
+    set(LLAMA_AVAILABLE TRUE)
+else()
+    set(LLAMA_AVAILABLE FALSE)
+    message(WARNING "llama.cpp not found in vendor/ — LLM labeling disabled")
+endif()
+
 # Generate protobuf/gRPC code
 find_program(PROTOC protoc REQUIRED)
 find_program(GRPC_CPP_PLUGIN grpc_cpp_plugin REQUIRED)
@@ -70,6 +82,8 @@ add_executable(extractor
     src/ocr_handler.cpp
     src/fingerprinter.cpp
     src/template_cache.cpp
+    src/llm_labeler.cpp
+    src/audio_handler.cpp
     ${PROTO_SRCS}
     ${GRPC_SRCS}
 )
@@ -83,6 +97,7 @@ target_include_directories(extractor PRIVATE
     ${HIREDIS_INCLUDE_DIRS}
     ${Protobuf_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIRS}
+    ${CMAKE_SOURCE_DIR}/vendor/whisper.cpp/include
 )
 
 target_link_libraries(extractor
@@ -96,3 +111,27 @@ target_link_libraries(extractor
     ${CURL_LIBRARIES}
     OpenSSL::Crypto
 )
+
+# Whisper.cpp — link pre-built static library (built separately to avoid ggml conflicts with llama.cpp)
+if(EXISTS "${CMAKE_SOURCE_DIR}/vendor/whisper.cpp/build/src/libwhisper.a")
+    add_library(whisper STATIC IMPORTED)
+    set_target_properties(whisper PROPERTIES
+        IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/vendor/whisper.cpp/build/src/libwhisper.a"
+    )
+    # Also need whisper's ggml libs
+    file(GLOB WHISPER_GGML_LIBS "${CMAKE_SOURCE_DIR}/vendor/whisper.cpp/build/ggml/src/libggml*.a")
+    set(WHISPER_AVAILABLE TRUE)
+else()
+    set(WHISPER_AVAILABLE FALSE)
+    message(WARNING "whisper.cpp not pre-built — audio transcription disabled")
+endif()
+
+if(LLAMA_AVAILABLE)
+    target_link_libraries(extractor llama)
+    target_compile_definitions(extractor PRIVATE LLAMA_AVAILABLE)
+endif()
+
+if(WHISPER_AVAILABLE)
+    target_link_libraries(extractor whisper ${WHISPER_GGML_LIBS})
+    target_compile_definitions(extractor PRIVATE WHISPER_AVAILABLE)
+endif()

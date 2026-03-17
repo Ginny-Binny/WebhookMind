@@ -97,21 +97,83 @@ func (x *ExtractionRequest) GetPresignedUrl() string {
 	return ""
 }
 
-type ExtractionResponse struct {
+type TranscriptionSegment struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`    // populated only if success = false
-	ExtractedJson string                 `protobuf:"bytes,3,opt,name=extracted_json,json=extractedJson,proto3" json:"extracted_json,omitempty"` // JSON string of extracted fields
-	TemplateId    string                 `protobuf:"bytes,4,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`          // fingerprint hash, for cache tracking
-	CacheHit      bool                   `protobuf:"varint,5,opt,name=cache_hit,json=cacheHit,proto3" json:"cache_hit,omitempty"`               // was this a fast-path cache hit?
-	DurationMs    int64                  `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	StartMs       int64                  `protobuf:"varint,1,opt,name=start_ms,json=startMs,proto3" json:"start_ms,omitempty"`
+	EndMs         int64                  `protobuf:"varint,2,opt,name=end_ms,json=endMs,proto3" json:"end_ms,omitempty"`
+	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
+func (x *TranscriptionSegment) Reset() {
+	*x = TranscriptionSegment{}
+	mi := &file_extraction_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TranscriptionSegment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TranscriptionSegment) ProtoMessage() {}
+
+func (x *TranscriptionSegment) ProtoReflect() protoreflect.Message {
+	mi := &file_extraction_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TranscriptionSegment.ProtoReflect.Descriptor instead.
+func (*TranscriptionSegment) Descriptor() ([]byte, []int) {
+	return file_extraction_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TranscriptionSegment) GetStartMs() int64 {
+	if x != nil {
+		return x.StartMs
+	}
+	return 0
+}
+
+func (x *TranscriptionSegment) GetEndMs() int64 {
+	if x != nil {
+		return x.EndMs
+	}
+	return 0
+}
+
+func (x *TranscriptionSegment) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+type ExtractionResponse struct {
+	state            protoimpl.MessageState  `protogen:"open.v1"`
+	Success          bool                    `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	ErrorMessage     string                  `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`    // populated only if success = false
+	ExtractedJson    string                  `protobuf:"bytes,3,opt,name=extracted_json,json=extractedJson,proto3" json:"extracted_json,omitempty"` // JSON string of extracted fields
+	TemplateId       string                  `protobuf:"bytes,4,opt,name=template_id,json=templateId,proto3" json:"template_id,omitempty"`          // fingerprint hash, for cache tracking
+	CacheHit         bool                    `protobuf:"varint,5,opt,name=cache_hit,json=cacheHit,proto3" json:"cache_hit,omitempty"`               // was this a fast-path cache hit?
+	DurationMs       int64                   `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	Segments         []*TranscriptionSegment `protobuf:"bytes,7,rep,name=segments,proto3" json:"segments,omitempty"`                                         // audio transcription segments
+	DetectedLanguage string                  `protobuf:"bytes,8,opt,name=detected_language,json=detectedLanguage,proto3" json:"detected_language,omitempty"` // detected language for audio
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
 func (x *ExtractionResponse) Reset() {
 	*x = ExtractionResponse{}
-	mi := &file_extraction_proto_msgTypes[1]
+	mi := &file_extraction_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -123,7 +185,7 @@ func (x *ExtractionResponse) String() string {
 func (*ExtractionResponse) ProtoMessage() {}
 
 func (x *ExtractionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_extraction_proto_msgTypes[1]
+	mi := &file_extraction_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -136,7 +198,7 @@ func (x *ExtractionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtractionResponse.ProtoReflect.Descriptor instead.
 func (*ExtractionResponse) Descriptor() ([]byte, []int) {
-	return file_extraction_proto_rawDescGZIP(), []int{1}
+	return file_extraction_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ExtractionResponse) GetSuccess() bool {
@@ -181,6 +243,20 @@ func (x *ExtractionResponse) GetDurationMs() int64 {
 	return 0
 }
 
+func (x *ExtractionResponse) GetSegments() []*TranscriptionSegment {
+	if x != nil {
+		return x.Segments
+	}
+	return nil
+}
+
+func (x *ExtractionResponse) GetDetectedLanguage() string {
+	if x != nil {
+		return x.DetectedLanguage
+	}
+	return ""
+}
+
 var File_extraction_proto protoreflect.FileDescriptor
 
 const file_extraction_proto_rawDesc = "" +
@@ -192,7 +268,11 @@ const file_extraction_proto_rawDesc = "" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1b\n" +
 	"\tfile_type\x18\x03 \x01(\tR\bfileType\x12\x1b\n" +
 	"\tsource_id\x18\x04 \x01(\tR\bsourceId\x12#\n" +
-	"\rpresigned_url\x18\x05 \x01(\tR\fpresignedUrl\"\xd9\x01\n" +
+	"\rpresigned_url\x18\x05 \x01(\tR\fpresignedUrl\"\\\n" +
+	"\x14TranscriptionSegment\x12\x19\n" +
+	"\bstart_ms\x18\x01 \x01(\x03R\astartMs\x12\x15\n" +
+	"\x06end_ms\x18\x02 \x01(\x03R\x05endMs\x12\x12\n" +
+	"\x04text\x18\x03 \x01(\tR\x04text\"\xc4\x02\n" +
 	"\x12ExtractionResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12#\n" +
 	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\x12%\n" +
@@ -201,7 +281,9 @@ const file_extraction_proto_rawDesc = "" +
 	"templateId\x12\x1b\n" +
 	"\tcache_hit\x18\x05 \x01(\bR\bcacheHit\x12\x1f\n" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
-	"durationMs2]\n" +
+	"durationMs\x12<\n" +
+	"\bsegments\x18\a \x03(\v2 .extraction.TranscriptionSegmentR\bsegments\x12+\n" +
+	"\x11detected_language\x18\b \x01(\tR\x10detectedLanguage2]\n" +
 	"\x11ExtractionService\x12H\n" +
 	"\aExtract\x12\x1d.extraction.ExtractionRequest\x1a\x1e.extraction.ExtractionResponseB;Z9github.com/gauravfs-14/webhookmind/internal/extraction/pbb\x06proto3"
 
@@ -217,19 +299,21 @@ func file_extraction_proto_rawDescGZIP() []byte {
 	return file_extraction_proto_rawDescData
 }
 
-var file_extraction_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_extraction_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_extraction_proto_goTypes = []any{
-	(*ExtractionRequest)(nil),  // 0: extraction.ExtractionRequest
-	(*ExtractionResponse)(nil), // 1: extraction.ExtractionResponse
+	(*ExtractionRequest)(nil),    // 0: extraction.ExtractionRequest
+	(*TranscriptionSegment)(nil), // 1: extraction.TranscriptionSegment
+	(*ExtractionResponse)(nil),   // 2: extraction.ExtractionResponse
 }
 var file_extraction_proto_depIdxs = []int32{
-	0, // 0: extraction.ExtractionService.Extract:input_type -> extraction.ExtractionRequest
-	1, // 1: extraction.ExtractionService.Extract:output_type -> extraction.ExtractionResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	1, // 0: extraction.ExtractionResponse.segments:type_name -> extraction.TranscriptionSegment
+	0, // 1: extraction.ExtractionService.Extract:input_type -> extraction.ExtractionRequest
+	2, // 2: extraction.ExtractionService.Extract:output_type -> extraction.ExtractionResponse
+	2, // [2:3] is the sub-list for method output_type
+	1, // [1:2] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_extraction_proto_init() }
@@ -243,7 +327,7 @@ func file_extraction_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_extraction_proto_rawDesc), len(file_extraction_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+class LLMLabeler; // forward declaration
+
 struct TextBlock {
     std::string text;
     double x, y, w, h;
@@ -22,5 +24,6 @@ ExtractionResult extract_document(
     const std::string& file_type,
     const std::string& source_id,
     const std::string& presigned_url,
-    const std::string& redis_addr
+    const std::string& redis_addr,
+    LLMLabeler* labeler = nullptr
 );

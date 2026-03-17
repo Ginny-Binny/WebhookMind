@@ -65,6 +65,19 @@ type ExtractorBridgeConfig struct {
 	QueueScaleThreshold int64
 }
 
+type SchemaConfig struct {
+	MinSamples        int
+	DriftAlertEnabled bool
+}
+
+type APIConfig struct {
+	Port int
+}
+
+type ReplayConfig struct {
+	MaxEventsPerSession int
+}
+
 type Config struct {
 	Ingestion       IngestionConfig
 	Orchestrator    OrchestratorConfig
@@ -76,6 +89,9 @@ type Config struct {
 	MinIO           MinIOConfig
 	Extractor       ExtractorConfig
 	File            FileConfig
+	Schema          SchemaConfig
+	API             APIConfig
+	Replay          ReplayConfig
 	LogLevel        slog.Level
 }
 
@@ -139,6 +155,16 @@ func Load() (*Config, error) {
 			Workers:             envOrDefaultInt("EXTRACTOR_BRIDGE_WORKERS", 10),
 			MaxWorkers:          envOrDefaultInt("EXTRACTOR_BRIDGE_MAX_WORKERS", 50),
 			QueueScaleThreshold: int64(envOrDefaultInt("EXTRACTOR_BRIDGE_QUEUE_SCALE_THRESHOLD", 1000)),
+		},
+		Schema: SchemaConfig{
+			MinSamples:        envOrDefaultInt("SCHEMA_INFERENCE_MIN_SAMPLES", 10),
+			DriftAlertEnabled: envOrDefault("SCHEMA_DRIFT_ALERT_ENABLED", "true") == "true",
+		},
+		API: APIConfig{
+			Port: envOrDefaultInt("API_PORT", 8082),
+		},
+		Replay: ReplayConfig{
+			MaxEventsPerSession: envOrDefaultInt("REPLAY_MAX_EVENTS_PER_SESSION", 100000),
 		},
 		LogLevel: parseLogLevel(envOrDefault("LOG_LEVEL", "info")),
 	}

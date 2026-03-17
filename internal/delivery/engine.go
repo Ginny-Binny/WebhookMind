@@ -3,6 +3,7 @@ package delivery
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
+	"github.com/gauravfs-14/webhookmind/internal/routing"
+	"github.com/gauravfs-14/webhookmind/internal/schema"
 	"github.com/gauravfs-14/webhookmind/internal/store"
 	"github.com/google/uuid"
 )
@@ -26,12 +29,13 @@ var retryDelays = []time.Duration{
 }
 
 type Engine struct {
-	queue      *queue.RedisQueue
-	pg         *store.PostgresStore
-	scylla     *store.ScyllaStore
-	client     *http.Client
-	logger     *slog.Logger
-	maxRetries int
+	queue            *queue.RedisQueue
+	pg               *store.PostgresStore
+	scylla           *store.ScyllaStore
+	client           *http.Client
+	logger           *slog.Logger
+	maxRetries       int
+	schemaMinSamples int
 }
 
 func NewEngine(
@@ -40,14 +44,16 @@ func NewEngine(
 	scylla *store.ScyllaStore,
 	logger *slog.Logger,
 	maxRetries int,
+	schemaMinSamples int,
 ) *Engine {
 	return &Engine{
-		queue:      q,
-		pg:         pg,
-		scylla:     scylla,
-		client:     &http.Client{},
-		logger:     logger,
-		maxRetries: maxRetries,
+		queue:            q,
+		pg:               pg,
+		scylla:           scylla,
+		client:           &http.Client{},
+		logger:           logger,
+		maxRetries:       maxRetries,
+		schemaMinSamples: schemaMinSamples,
 	}
 }
 
@@ -98,12 +104,29 @@ func (e *Engine) deliverEvent(ctx context.Context, event *models.WebhookEvent) {
 			"source_id", event.SourceID,
 			"error", err,
 		)
-		// Continue with delivery even if ScyllaDB write fails.
 	}
 
-	dests, err := e.pg.GetDestinationsBySourceID(ctx, event.SourceID)
+	// Parse payload for schema inference, drift detection, and routing.
+	var payload map[string]any
+	if err := json.Unmarshal(event.RawBody, &payload); err == nil {
+		// Schema inference (runs for all webhooks, fast).
+		schema.UpdateSchema(ctx, e.pg, e.logger, event.SourceID, payload, e.schemaMinSamples)
+
+		// Drift detection (only after schema is locked).
+		schema.CheckDrift(ctx, e.pg, e.logger, event.SourceID, event.ID, payload)
+
+		// Async diff against previous webhook (never blocks delivery).
+		// Small delay to let current delivery record first.
+		go func() {
+			time.Sleep(2 * time.Second)
+			e.computeDiffAsync(ctx, event, payload)
+		}()
+	}
+
+	// Resolve destinations via routing rules (falls back to defaults).
+	dests, err := routing.ResolveDestinations(ctx, e.pg, event.SourceID, event.RawBody, e.logger)
 	if err != nil {
-		e.logger.Error("failed to get destinations",
+		e.logger.Error("failed to resolve destinations",
 			"component", "delivery",
 			"event_id", event.ID,
 			"source_id", event.SourceID,
@@ -295,6 +318,62 @@ func (e *Engine) moveToDLQ(ctx context.Context, event *models.WebhookEvent, dest
 			"event_id", event.ID,
 			"source_id", event.SourceID,
 			"destination_id", dest.ID,
+			"error", err,
+		)
+	}
+}
+
+func (e *Engine) computeDiffAsync(ctx context.Context, event *models.WebhookEvent, currentPayload map[string]any) {
+	prevEventID, err := e.pg.GetPreviousEventID(ctx, event.SourceID, event.ID)
+	if err != nil {
+		e.logger.Debug("no previous event for diff", "event_id", event.ID, "error", err)
+		return
+	}
+
+	prevEvent, err := e.scylla.GetEvent(event.SourceID, prevEventID)
+	if err != nil || prevEvent == nil {
+		e.logger.Debug("failed to get previous event from scylla", "event_id", event.ID, "prev_event_id", prevEventID, "error", err)
+		return
+	}
+
+	var prevPayload map[string]any
+	if err := json.Unmarshal(prevEvent.RawBody, &prevPayload); err != nil {
+		return
+	}
+
+	flat1 := schema.FlattenJSON(currentPayload)
+	flat2 := schema.FlattenJSON(prevPayload)
+
+	added := make(map[string]any)
+	removed := make(map[string]any)
+	var changed []map[string]any
+
+	for k, v := range flat1 {
+		if pv, exists := flat2[k]; !exists {
+			added[k] = v
+		} else if fmt.Sprintf("%v", v) != fmt.Sprintf("%v", pv) {
+			changed = append(changed, map[string]any{
+				"field":     k,
+				"old_value": pv,
+				"new_value": v,
+			})
+		}
+	}
+	for k, v := range flat2 {
+		if _, exists := flat1[k]; !exists {
+			removed[k] = v
+		}
+	}
+
+	diffData, _ := json.Marshal(map[string]any{
+		"added":   added,
+		"removed": removed,
+		"changed": changed,
+	})
+
+	if err := e.pg.InsertWebhookDiff(ctx, event.ID, event.SourceID, prevEventID, diffData); err != nil {
+		e.logger.Error("failed to insert webhook diff",
+			"event_id", event.ID,
 			"error", err,
 		)
 	}

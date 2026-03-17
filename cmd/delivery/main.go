@@ -52,7 +52,7 @@ func main() {
 	defer scylla.Close()
 
 	// Create delivery engine.
-	engine := delivery.NewEngine(redisQueue, pg, scylla, logger, cfg.Delivery.MaxRetries)
+	engine := delivery.NewEngine(redisQueue, pg, scylla, logger, cfg.Delivery.MaxRetries, cfg.Schema.MinSamples)
 
 	// Recover incomplete deliveries from a previous crash.
 	engine.RecoverIncomplete(ctx)

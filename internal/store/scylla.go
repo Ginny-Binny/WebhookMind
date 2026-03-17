@@ -75,6 +75,37 @@ func (s *ScyllaStore) GetEvent(sourceID string, eventID string) (*models.Webhook
 	return &event, nil
 }
 
+func (s *ScyllaStore) GetEventsBySourceSince(sourceID string, since time.Time) ([]*models.WebhookEvent, error) {
+	iter := s.session.Query(
+		`SELECT source_id, received_at, event_id, raw_body, headers FROM webhook_events
+		 WHERE source_id = ? AND received_at >= ? ALLOW FILTERING`,
+		sourceID, since,
+	).PageSize(100).Iter()
+
+	var events []*models.WebhookEvent
+	var sid string
+	var receivedAt time.Time
+	var eventUUID gocql.UUID
+	var rawBody []byte
+	var headers map[string]string
+
+	for iter.Scan(&sid, &receivedAt, &eventUUID, &rawBody, &headers) {
+		events = append(events, &models.WebhookEvent{
+			ID:         eventUUID.String(),
+			SourceID:   sid,
+			ReceivedAt: receivedAt,
+			RawBody:    rawBody,
+			Headers:    headers,
+		})
+	}
+
+	if err := iter.Close(); err != nil {
+		return nil, fmt.Errorf("iterate events from scylla: %w", err)
+	}
+
+	return events, nil
+}
+
 func (s *ScyllaStore) Close() {
 	s.session.Close()
 }
