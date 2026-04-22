@@ -12,6 +12,8 @@ import (
 
 	"github.com/gauravfs-14/webhookmind/internal/api"
 	"github.com/gauravfs-14/webhookmind/internal/config"
+	"github.com/gauravfs-14/webhookmind/internal/pubsub"
+	"github.com/gauravfs-14/webhookmind/internal/queue"
 	"github.com/gauravfs-14/webhookmind/internal/replay"
 	"github.com/gauravfs-14/webhookmind/internal/store"
 )
@@ -34,7 +36,7 @@ func main() {
 	}
 	defer pgStore.Close()
 
-	// Initialize ScyllaDB for replay.
+	// Initialize ScyllaDB for replay and webhook detail.
 	scyllaStore, err := store.NewScyllaStore(cfg.Scylla.Hosts, cfg.Scylla.Keyspace)
 	if err != nil {
 		logger.Error("failed to connect to scylladb", "error", err)
@@ -42,8 +44,26 @@ func main() {
 	}
 	defer scyllaStore.Close()
 
+	// Initialize Redis pub/sub publisher (for metrics queries).
+	pub, err := pubsub.NewPublisher(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if err != nil {
+		logger.Warn("failed to create pubsub publisher, metrics disabled", "error", err)
+	}
+	if pub != nil {
+		defer pub.Close()
+	}
+
+	// Initialize Redis queue (for DLQ retry re-enqueue).
+	redisQueue, err := queue.NewRedisQueue(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if err != nil {
+		logger.Warn("failed to connect to redis queue, DLQ retry disabled", "error", err)
+	}
+	if redisQueue != nil {
+		defer redisQueue.Close()
+	}
+
 	replayEngine := replay.NewEngine(pgStore, scyllaStore, logger)
-	srv := api.NewServer(pgStore, replayEngine, logger)
+	srv := api.NewServer(pgStore, scyllaStore, pub, redisQueue, replayEngine, logger)
 
 	httpServer := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.API.Port),

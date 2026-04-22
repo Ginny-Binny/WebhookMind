@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
+	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -15,13 +16,15 @@ import (
 
 type Handler struct {
 	queue        *queue.RedisQueue
+	pub          *pubsub.Publisher
 	logger       *slog.Logger
 	maxBodyBytes int64
 }
 
-func NewHandler(q *queue.RedisQueue, logger *slog.Logger, maxBodyBytes int64) *Handler {
+func NewHandler(q *queue.RedisQueue, pub *pubsub.Publisher, logger *slog.Logger, maxBodyBytes int64) *Handler {
 	return &Handler{
 		queue:        q,
+		pub:          pub,
 		logger:       logger,
 		maxBodyBytes: maxBodyBytes,
 	}
@@ -87,6 +90,15 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		"event_id", eventID,
 		"source_id", sourceID,
 	)
+
+	if h.pub != nil {
+		h.pub.Publish(r.Context(), pubsub.EventWebhookReceived, map[string]any{
+			"event_id":    eventID,
+			"source_id":   sourceID,
+			"received_at": event.ReceivedAt,
+		})
+		h.pub.RecordThroughput(r.Context())
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

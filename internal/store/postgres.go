@@ -485,6 +485,175 @@ func (s *PostgresStore) UpdateReplaySessionProgress(ctx context.Context, session
 	return nil
 }
 
+// --- Dashboard API methods ---
+
+func (s *PostgresStore) ListSources(ctx context.Context) ([]models.Source, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT source_id FROM delivery_attempts
+		 UNION
+		 SELECT DISTINCT source_id FROM dead_letter_queue
+		 ORDER BY source_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list sources: %w", err)
+	}
+	defer rows.Close()
+
+	var sources []models.Source
+	for rows.Next() {
+		var s models.Source
+		if err := rows.Scan(&s.ID); err != nil {
+			return nil, fmt.Errorf("scan source: %w", err)
+		}
+		s.Name = s.ID
+		sources = append(sources, s)
+	}
+	return sources, nil
+}
+
+type WebhookListItem struct {
+	EventID        string    `json:"event_id"`
+	SourceID       string    `json:"source_id"`
+	ReceivedAt     time.Time `json:"received_at"`
+	StatusCode     int       `json:"status_code"`
+	Success        bool      `json:"success"`
+	DurationMs     int64     `json:"duration_ms"`
+	HasExtraction  bool      `json:"has_extraction"`
+	ExtractionHit  bool      `json:"extraction_cache_hit"`
+}
+
+func (s *PostgresStore) ListWebhooks(ctx context.Context, sourceID string, limit, offset int) ([]WebhookListItem, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT da.event_id, da.source_id, da.attempted_at, da.status_code, da.success, da.duration_ms,
+		        CASE WHEN er.id IS NOT NULL THEN true ELSE false END AS has_extraction,
+		        COALESCE(er.cache_hit, false) AS extraction_cache_hit
+		 FROM delivery_attempts da
+		 LEFT JOIN extraction_records er ON da.event_id = er.event_id
+		 WHERE da.source_id = $1 AND da.attempt_number = 1
+		 ORDER BY da.attempted_at DESC
+		 LIMIT $2 OFFSET $3`,
+		sourceID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list webhooks: %w", err)
+	}
+	defer rows.Close()
+
+	var items []WebhookListItem
+	for rows.Next() {
+		var item WebhookListItem
+		if err := rows.Scan(&item.EventID, &item.SourceID, &item.ReceivedAt,
+			&item.StatusCode, &item.Success, &item.DurationMs,
+			&item.HasExtraction, &item.ExtractionHit); err != nil {
+			return nil, fmt.Errorf("scan webhook item: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+type WebhookDetail struct {
+	EventID    string                   `json:"event_id"`
+	SourceID   string                   `json:"source_id"`
+	RawBody    json.RawMessage          `json:"raw_body,omitempty"`
+	Attempts   []models.DeliveryAttempt `json:"attempts"`
+	Extraction *models.ExtractionRecord `json:"extraction,omitempty"`
+	Diff       json.RawMessage          `json:"diff,omitempty"`
+}
+
+func (s *PostgresStore) GetWebhookDetail(ctx context.Context, eventID string) (*WebhookDetail, error) {
+	detail := &WebhookDetail{EventID: eventID}
+
+	// Get delivery attempts.
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, event_id, source_id, destination_id, attempt_number, attempted_at,
+		        status_code, success, error_message, duration_ms
+		 FROM delivery_attempts WHERE event_id = $1 ORDER BY attempt_number`, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("get webhook attempts: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var a models.DeliveryAttempt
+		if err := rows.Scan(&a.ID, &a.EventID, &a.SourceID, &a.DestinationID,
+			&a.AttemptNumber, &a.AttemptedAt, &a.StatusCode, &a.Success,
+			&a.ErrorMessage, &a.DurationMs); err != nil {
+			return nil, fmt.Errorf("scan attempt: %w", err)
+		}
+		detail.SourceID = a.SourceID
+		detail.Attempts = append(detail.Attempts, a)
+	}
+
+	// Get extraction record.
+	var er models.ExtractionRecord
+	var extractedJSON []byte
+	err = s.pool.QueryRow(ctx,
+		`SELECT id, event_id, source_id, file_url, minio_path, file_type,
+		        template_id, cache_hit, extracted_data, duration_ms, success, error_message, created_at
+		 FROM extraction_records WHERE event_id = $1`, eventID).
+		Scan(&er.ID, &er.EventID, &er.SourceID, &er.FileURL, &er.MinIOPath,
+			&er.FileType, &er.TemplateID, &er.CacheHit, &extractedJSON,
+			&er.DurationMs, &er.Success, &er.ErrorMessage, &er.CreatedAt)
+	if err == nil {
+		if extractedJSON != nil {
+			json.Unmarshal(extractedJSON, &er.ExtractedData)
+		}
+		detail.Extraction = &er
+	}
+
+	// Get diff.
+	var diffData []byte
+	err = s.pool.QueryRow(ctx,
+		`SELECT diff_data FROM webhook_diffs WHERE event_id = $1`, eventID).Scan(&diffData)
+	if err == nil {
+		detail.Diff = diffData
+	}
+
+	return detail, nil
+}
+
+func (s *PostgresStore) ListDLQEntries(ctx context.Context, sourceID string, limit, offset int) ([]models.DeadLetterEntry, error) {
+	query := `SELECT id, event_id, source_id, destination_id, failed_at, failure_reason, resolved
+		 FROM dead_letter_queue WHERE resolved = FALSE`
+	args := []any{}
+	argIdx := 1
+
+	if sourceID != "" {
+		query += fmt.Sprintf(" AND source_id = $%d", argIdx)
+		args = append(args, sourceID)
+		argIdx++
+	}
+
+	query += fmt.Sprintf(" ORDER BY failed_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	args = append(args, limit, offset)
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list dlq: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []models.DeadLetterEntry
+	for rows.Next() {
+		var e models.DeadLetterEntry
+		if err := rows.Scan(&e.ID, &e.EventID, &e.SourceID, &e.DestinationID,
+			&e.FailedAt, &e.FailureReason, &e.Resolved); err != nil {
+			return nil, fmt.Errorf("scan dlq entry: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func (s *PostgresStore) ResolveDLQEntry(ctx context.Context, eventID string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE dead_letter_queue SET resolved = TRUE, resolved_at = NOW() WHERE event_id = $1 AND resolved = FALSE`,
+		eventID)
+	if err != nil {
+		return fmt.Errorf("resolve dlq entry: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) Close() {
 	s.pool.Close()
 }

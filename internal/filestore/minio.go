@@ -31,6 +31,7 @@ func NewMinIOStore(cfg config.MinIOConfig, logger *slog.Logger) (*MinIOStore, er
 	}
 
 	// Create a second client for internal (Docker-accessible) presigned URLs.
+	// Set region explicitly so PresignedGetObject doesn't need to call getBucketLocation.
 	internalEndpoint := cfg.Endpoint
 	if cfg.InternalEndpoint != "" {
 		internalEndpoint = cfg.InternalEndpoint
@@ -38,6 +39,7 @@ func NewMinIOStore(cfg config.MinIOConfig, logger *slog.Logger) (*MinIOStore, er
 	internalClient, err := minio.New(internalEndpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.UseSSL,
+		Region: "us-east-1",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("minio internal client: %w", err)
@@ -94,8 +96,9 @@ func (s *MinIOStore) GetPresignedURL(ctx context.Context, objectPath string, exp
 	return presignedURL.String(), nil
 }
 
-// GetInternalPresignedURL generates a presigned URL using the internal endpoint,
-// accessible from Docker containers.
+// GetInternalPresignedURL generates a presigned URL accessible from Docker containers.
+// PresignedGetObject computes the signature locally (no network call needed),
+// so using the internal client works even though host.docker.internal isn't reachable from the host.
 func (s *MinIOStore) GetInternalPresignedURL(ctx context.Context, objectPath string, expiry time.Duration) (string, error) {
 	presignedURL, err := s.internalClient.PresignedGetObject(ctx, s.bucket, objectPath, expiry, url.Values{})
 	if err != nil {

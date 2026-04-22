@@ -132,6 +132,6 @@ if(LLAMA_AVAILABLE)
 endif()
 
 if(WHISPER_AVAILABLE)
-    target_link_libraries(extractor whisper ${WHISPER_GGML_LIBS})
+    target_link_libraries(extractor whisper ${WHISPER_GGML_LIBS} gomp)
     target_compile_definitions(extractor PRIVATE WHISPER_AVAILABLE)
 endif()

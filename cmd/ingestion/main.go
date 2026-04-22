@@ -12,6 +12,7 @@ import (
 
 	"github.com/gauravfs-14/webhookmind/internal/config"
 	"github.com/gauravfs-14/webhookmind/internal/ingestion"
+	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
 )
 
@@ -33,7 +34,15 @@ func main() {
 	}
 	defer redisQueue.Close()
 
-	handler := ingestion.NewHandler(redisQueue, logger, cfg.Ingestion.MaxBodyBytes)
+	pub, err := pubsub.NewPublisher(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if err != nil {
+		logger.Warn("failed to create pubsub publisher, SSE events disabled", "error", err)
+	}
+	if pub != nil {
+		defer pub.Close()
+	}
+
+	handler := ingestion.NewHandler(redisQueue, pub, logger, cfg.Ingestion.MaxBodyBytes)
 
 	server := &http.Server{
 		Addr:        fmt.Sprintf("0.0.0.0:%d", cfg.Ingestion.Port),

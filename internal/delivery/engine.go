@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
+	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
 	"github.com/gauravfs-14/webhookmind/internal/routing"
 	"github.com/gauravfs-14/webhookmind/internal/schema"
@@ -32,6 +33,7 @@ type Engine struct {
 	queue            *queue.RedisQueue
 	pg               *store.PostgresStore
 	scylla           *store.ScyllaStore
+	pub              *pubsub.Publisher
 	client           *http.Client
 	logger           *slog.Logger
 	maxRetries       int
@@ -42,6 +44,7 @@ func NewEngine(
 	q *queue.RedisQueue,
 	pg *store.PostgresStore,
 	scylla *store.ScyllaStore,
+	pub *pubsub.Publisher,
 	logger *slog.Logger,
 	maxRetries int,
 	schemaMinSamples int,
@@ -50,6 +53,7 @@ func NewEngine(
 		queue:            q,
 		pg:               pg,
 		scylla:           scylla,
+		pub:              pub,
 		client:           &http.Client{},
 		logger:           logger,
 		maxRetries:       maxRetries,
@@ -113,7 +117,17 @@ func (e *Engine) deliverEvent(ctx context.Context, event *models.WebhookEvent) {
 		schema.UpdateSchema(ctx, e.pg, e.logger, event.SourceID, payload, e.schemaMinSamples)
 
 		// Drift detection (only after schema is locked).
-		schema.CheckDrift(ctx, e.pg, e.logger, event.SourceID, event.ID, payload)
+		drifts := schema.CheckDrift(ctx, e.pg, e.logger, event.SourceID, event.ID, payload)
+		if e.pub != nil {
+			for _, d := range drifts {
+				e.pub.Publish(ctx, pubsub.EventSchemaDrift, map[string]any{
+					"source_id":  event.SourceID,
+					"event_id":   event.ID,
+					"drift_type": d.DriftType,
+					"field_name": d.FieldName,
+				})
+			}
+		}
 
 		// Async diff against previous webhook (never blocks delivery).
 		// Small delay to let current delivery record first.
@@ -216,6 +230,16 @@ func (e *Engine) deliverToDestination(ctx context.Context, event *models.Webhook
 				"status_code", statusCode,
 				"duration_ms", duration.Milliseconds(),
 			)
+			if e.pub != nil {
+				e.pub.Publish(ctx, pubsub.EventWebhookDelivered, map[string]any{
+					"event_id":       event.ID,
+					"source_id":      event.SourceID,
+					"destination_id": dest.ID,
+					"status_code":    statusCode,
+					"duration_ms":    duration.Milliseconds(),
+				})
+				e.pub.RecordLatency(ctx, duration.Milliseconds())
+			}
 			return
 		}
 
@@ -253,6 +277,14 @@ func (e *Engine) deliverToDestination(ctx context.Context, event *models.Webhook
 		"destination_id", dest.ID,
 		"max_retries", e.maxRetries,
 	)
+	if e.pub != nil {
+		e.pub.Publish(ctx, pubsub.EventDeliveryFailed, map[string]any{
+			"event_id":       event.ID,
+			"source_id":      event.SourceID,
+			"destination_id": dest.ID,
+			"attempts":       e.maxRetries,
+		})
+	}
 	e.moveToDLQ(ctx, event, dest, fmt.Sprintf("exhausted %d delivery attempts", e.maxRetries))
 }
 
@@ -320,6 +352,15 @@ func (e *Engine) moveToDLQ(ctx context.Context, event *models.WebhookEvent, dest
 			"destination_id", dest.ID,
 			"error", err,
 		)
+	}
+
+	if e.pub != nil {
+		e.pub.Publish(ctx, pubsub.EventDLQAdded, map[string]any{
+			"event_id":       event.ID,
+			"source_id":      event.SourceID,
+			"destination_id": dest.ID,
+			"reason":         reason,
+		})
 	}
 }
 

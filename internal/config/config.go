@@ -78,6 +78,10 @@ type ReplayConfig struct {
 	MaxEventsPerSession int
 }
 
+type SSEConfig struct {
+	Port int
+}
+
 type Config struct {
 	Ingestion       IngestionConfig
 	Orchestrator    OrchestratorConfig
@@ -92,6 +96,7 @@ type Config struct {
 	Schema          SchemaConfig
 	API             APIConfig
 	Replay          ReplayConfig
+	SSE             SSEConfig
 	LogLevel        slog.Level
 }
 
@@ -165,6 +170,9 @@ func Load() (*Config, error) {
 		},
 		Replay: ReplayConfig{
 			MaxEventsPerSession: envOrDefaultInt("REPLAY_MAX_EVENTS_PER_SESSION", 100000),
+		},
+		SSE: SSEConfig{
+			Port: envOrDefaultInt("SSE_PORT", 8081),
 		},
 		LogLevel: parseLogLevel(envOrDefault("LOG_LEVEL", "info")),
 	}

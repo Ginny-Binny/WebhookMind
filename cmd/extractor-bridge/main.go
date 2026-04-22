@@ -22,6 +22,7 @@ import (
 	pb "github.com/gauravfs-14/webhookmind/internal/extraction/pb"
 	"github.com/gauravfs-14/webhookmind/internal/filestore"
 	"github.com/gauravfs-14/webhookmind/internal/models"
+	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
 	"github.com/gauravfs-14/webhookmind/internal/store"
 )
@@ -64,6 +65,14 @@ func main() {
 	}
 	defer grpcClient.Close()
 
+	pub, err := pubsub.NewPublisher(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if err != nil {
+		logger.Warn("failed to create pubsub publisher, SSE events disabled", "error", err)
+	}
+	if pub != nil {
+		defer pub.Close()
+	}
+
 	httpClient := &http.Client{
 		Timeout: time.Duration(cfg.File.DownloadTimeoutSeconds) * time.Second,
 	}
@@ -102,7 +111,7 @@ func main() {
 					continue
 				}
 
-				processEvent(ctx, logger, event, cfg, httpClient, minioStore, grpcClient, pgStore, redisQueue)
+				processEvent(ctx, logger, event, cfg, httpClient, minioStore, grpcClient, pgStore, redisQueue, pub)
 			}
 		}(id)
 	}
@@ -166,6 +175,7 @@ func processEvent(
 	grpcClient *extraction.ExtractionClient,
 	pgStore *store.PostgresStore,
 	redisQueue *queue.RedisQueue,
+	pub *pubsub.Publisher,
 ) {
 	startTime := time.Now()
 
@@ -355,6 +365,17 @@ func processEvent(
 		"cache_hit", grpcResp.CacheHit,
 		"duration_ms", grpcResp.DurationMs,
 	)
+
+	if pub != nil {
+		pub.Publish(ctx, pubsub.EventExtractionComplete, map[string]any{
+			"event_id":    event.ID,
+			"source_id":   event.SourceID,
+			"template_id": grpcResp.TemplateId,
+			"cache_hit":   grpcResp.CacheHit,
+			"duration_ms": grpcResp.DurationMs,
+			"file_type":   fileType,
+		})
+	}
 
 	// 8. Enqueue enriched event for delivery.
 	enqueueForDelivery(ctx, logger, redisQueue, event)

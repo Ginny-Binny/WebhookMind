@@ -19,6 +19,9 @@
 *.swo
 *~
 
+# Claude Code local state
+.claude/settings.local.json
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -32,3 +35,15 @@ data/
 # Test output
 *.test
 coverage.out
+
+# ML model files
+*.gguf
+*.bin
+*.onnx
+
+# Dashboard
+dashboard/node_modules/
+dashboard/dist/
+
+# Stray npm lockfile at repo root (no root package.json exists)
+/package-lock.json

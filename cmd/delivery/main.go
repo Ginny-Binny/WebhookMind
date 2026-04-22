@@ -9,6 +9,7 @@ import (
 
 	"github.com/gauravfs-14/webhookmind/internal/config"
 	"github.com/gauravfs-14/webhookmind/internal/delivery"
+	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
 	"github.com/gauravfs-14/webhookmind/internal/store"
 )
@@ -51,8 +52,17 @@ func main() {
 	}
 	defer scylla.Close()
 
+	// Initialize pub/sub publisher for SSE events.
+	pub, err := pubsub.NewPublisher(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if err != nil {
+		logger.Warn("failed to create pubsub publisher, SSE events disabled", "error", err)
+	}
+	if pub != nil {
+		defer pub.Close()
+	}
+
 	// Create delivery engine.
-	engine := delivery.NewEngine(redisQueue, pg, scylla, logger, cfg.Delivery.MaxRetries, cfg.Schema.MinSamples)
+	engine := delivery.NewEngine(redisQueue, pg, scylla, pub, logger, cfg.Delivery.MaxRetries, cfg.Schema.MinSamples)
 
 	// Recover incomplete deliveries from a previous crash.
 	engine.RecoverIncomplete(ctx)
