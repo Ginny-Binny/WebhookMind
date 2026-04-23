@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 218 70" fill="none">
+  <!-- Full word rendered naturally by the font — the real 'i' with its real tittle becomes the neuron body -->
+  <text x="10" y="48"
+        font-family="'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'SF Mono', 'Consolas', 'Menlo', monospace"
+        font-size="32" font-weight="700"
+        textLength="198" lengthAdjust="spacingAndGlyphs"
+        fill="#8B5CF6">webhookmind</text>
+
+  <!-- Three dendrite sparks firing upward from the i-tittle (centered at ~x=163) -->
+  <g stroke="#8B5CF6" stroke-width="2" stroke-linecap="round">
+    <line x1="163" y1="16" x2="163" y2="7"/>
+    <line x1="159" y1="18" x2="155" y2="11"/>
+    <line x1="167" y1="18" x2="171" y2="11"/>
+  </g>
+
+  <!-- Synapse tips -->
+  <g fill="#8B5CF6">
+    <circle cx="163" cy="7"  r="1.5"/>
+    <circle cx="155" cy="11" r="1.5"/>
+    <circle cx="171" cy="11" r="1.5"/>
+  </g>
+</svg>

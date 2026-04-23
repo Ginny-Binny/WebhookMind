@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
@@ -19,12 +20,33 @@ func NewScyllaStore(hosts []string, keyspace string) (*ScyllaStore, error) {
 	cluster.ConnectTimeout = 10 * time.Second
 	cluster.Timeout = 5 * time.Second
 
-	session, err := cluster.CreateSession()
-	if err != nil {
-		return nil, fmt.Errorf("create scylla session: %w", err)
+	const maxAttempts = 10
+	var (
+		session *gocql.Session
+		err     error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		session, err = cluster.CreateSession()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("scylla session established after retry", "component", "store", "attempt", attempt)
+			}
+			return &ScyllaStore{session: session}, nil
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		delay := time.Duration(1<<min(attempt-1, 3)) * time.Second // 1s, 2s, 4s, 8s, then 8s...
+		slog.Warn("scylla not ready, retrying",
+			"component", "store",
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+			"wait", delay.String(),
+			"error", err.Error(),
+		)
+		time.Sleep(delay)
 	}
-
-	return &ScyllaStore{session: session}, nil
+	return nil, fmt.Errorf("create scylla session after %d attempts: %w", maxAttempts, err)
 }
 
 func (s *ScyllaStore) InsertEvent(event *models.WebhookEvent) error {
