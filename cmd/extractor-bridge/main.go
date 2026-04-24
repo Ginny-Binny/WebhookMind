@@ -272,12 +272,14 @@ func processEvent(
 	}
 
 	// 5. Call the extraction backend (local gRPC or cloud LLM).
+	// Pass the already-downloaded file bytes so the cloud backend doesn't have to fetch from MinIO.
 	resp, err := extractor.Extract(ctx, extraction.ExtractRequest{
 		EventID:      event.ID,
 		FilePath:     objectPath,
 		FileType:     fileType,
 		SourceID:     event.SourceID,
 		PresignedURL: presignedURL,
+		FileBytes:    fileData,
 	})
 	if err != nil {
 		logger.Error("extraction backend failed",
@@ -424,10 +426,26 @@ func extractFilename(fileURL, eventID string) string {
 }
 
 // newExtractor picks an extractor backend based on config.
-// Phase 1: only "local" is supported; Phase 2 will add "cloud".
+// Supported: "local" (gRPC to the C++ extractor container), "cloud" (Anthropic API).
 func newExtractor(cfg *config.Config, logger *slog.Logger) (extraction.Extractor, error) {
-	logger.Info("initializing extractor backend", "backend", "local")
-	return extraction.NewLocalExtractor(cfg.Extractor.GRPCAddr, cfg.Extractor.GRPCTimeoutSeconds)
+	switch strings.ToLower(cfg.Extractor.Backend) {
+	case "cloud":
+		logger.Info("initializing extractor backend",
+			"backend", "cloud",
+			"model", cfg.Extractor.AnthropicModel,
+		)
+		return extraction.NewCloudExtractor(
+			cfg.Extractor.AnthropicAPIKey,
+			cfg.Extractor.AnthropicModel,
+			cfg.Extractor.CloudTimeoutSeconds,
+			logger,
+		)
+	case "local", "":
+		logger.Info("initializing extractor backend", "backend", "local")
+		return extraction.NewLocalExtractor(cfg.Extractor.GRPCAddr, cfg.Extractor.GRPCTimeoutSeconds)
+	default:
+		return nil, fmt.Errorf("unknown EXTRACTOR_BACKEND %q (expected 'local' or 'cloud')", cfg.Extractor.Backend)
+	}
 }
 
 func enqueueForDelivery(ctx context.Context, logger *slog.Logger, redisQueue *queue.RedisQueue, event *models.WebhookEvent) {

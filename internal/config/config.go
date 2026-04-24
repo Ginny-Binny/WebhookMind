@@ -50,8 +50,12 @@ type MinIOConfig struct {
 }
 
 type ExtractorConfig struct {
-	GRPCAddr           string
-	GRPCTimeoutSeconds int
+	Backend             string // "local" | "cloud"
+	GRPCAddr            string
+	GRPCTimeoutSeconds  int
+	AnthropicAPIKey     string
+	AnthropicModel      string
+	CloudTimeoutSeconds int
 }
 
 type FileConfig struct {
@@ -149,8 +153,12 @@ func Load() (*Config, error) {
 			InternalEndpoint: envOrDefault("MINIO_INTERNAL_ENDPOINT", "host.docker.internal:9000"),
 		},
 		Extractor: ExtractorConfig{
-			GRPCAddr:           envOrDefault("EXTRACTOR_GRPC_ADDR", "127.0.0.1:50051"),
-			GRPCTimeoutSeconds: envOrDefaultInt("EXTRACTOR_GRPC_TIMEOUT_SECONDS", 120),
+			Backend:             envOrDefault("EXTRACTOR_BACKEND", "local"),
+			GRPCAddr:            envOrDefault("EXTRACTOR_GRPC_ADDR", "127.0.0.1:50051"),
+			GRPCTimeoutSeconds:  envOrDefaultInt("EXTRACTOR_GRPC_TIMEOUT_SECONDS", 120),
+			AnthropicAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
+			AnthropicModel:      envOrDefault("ANTHROPIC_MODEL", "claude-haiku-4-5"),
+			CloudTimeoutSeconds: envOrDefaultInt("CLOUD_EXTRACTOR_TIMEOUT_SECONDS", 60),
 		},
 		File: FileConfig{
 			MaxSizeBytes:           int64(envOrDefaultInt("FILE_MAX_SIZE_BYTES", 52428800)),

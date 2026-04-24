@@ -10,7 +10,8 @@ type ExtractRequest struct {
 	SourceID     string
 	FilePath     string // object path in MinIO
 	FileType     string // "pdf" | "image" | "audio" | "csv" | "xml"
-	PresignedURL string // for backends that need to download the file themselves
+	PresignedURL string // used by LocalExtractor — the C++ container downloads from this URL
+	FileBytes    []byte // optional; set by caller when the file is already in memory. CloudExtractor prefers this over re-downloading.
 }
 
 // TranscriptionSegment is a single chunk of transcribed audio.
