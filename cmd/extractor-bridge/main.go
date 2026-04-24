@@ -20,7 +20,6 @@ import (
 
 	"github.com/gauravfs-14/webhookmind/internal/config"
 	"github.com/gauravfs-14/webhookmind/internal/extraction"
-	pb "github.com/gauravfs-14/webhookmind/internal/extraction/pb"
 	"github.com/gauravfs-14/webhookmind/internal/filestore"
 	"github.com/gauravfs-14/webhookmind/internal/models"
 	"github.com/gauravfs-14/webhookmind/internal/pubsub"
@@ -59,12 +58,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	grpcClient, err := extraction.NewExtractionClient(cfg.Extractor.GRPCAddr, cfg.Extractor.GRPCTimeoutSeconds)
+	extractor, err := newExtractor(cfg, logger)
 	if err != nil {
-		logger.Error("failed to connect to extraction grpc", "error", err)
+		logger.Error("failed to initialize extractor backend", "error", err)
 		os.Exit(1)
 	}
-	defer grpcClient.Close()
+	defer extractor.Close()
 
 	pub, err := pubsub.NewPublisher(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
 	if err != nil {
@@ -112,7 +111,7 @@ func main() {
 					continue
 				}
 
-				processEvent(ctx, logger, event, cfg, httpClient, minioStore, grpcClient, pgStore, redisQueue, pub)
+				processEvent(ctx, logger, event, cfg, httpClient, minioStore, extractor, pgStore, redisQueue, pub)
 			}
 		}(id)
 	}
@@ -173,7 +172,7 @@ func processEvent(
 	cfg *config.Config,
 	httpClient *http.Client,
 	minioStore *filestore.MinIOStore,
-	grpcClient *extraction.ExtractionClient,
+	extractor extraction.Extractor,
 	pgStore *store.PostgresStore,
 	redisQueue *queue.RedisQueue,
 	pub *pubsub.Publisher,
@@ -272,16 +271,16 @@ func processEvent(
 		return
 	}
 
-	// 5. Call C++ extraction engine via gRPC.
-	grpcResp, err := grpcClient.Extract(ctx, &pb.ExtractionRequest{
-		EventId:      event.ID,
+	// 5. Call the extraction backend (local gRPC or cloud LLM).
+	resp, err := extractor.Extract(ctx, extraction.ExtractRequest{
+		EventID:      event.ID,
 		FilePath:     objectPath,
 		FileType:     fileType,
-		SourceId:     event.SourceID,
-		PresignedUrl: presignedURL,
+		SourceID:     event.SourceID,
+		PresignedURL: presignedURL,
 	})
 	if err != nil {
-		logger.Error("grpc extraction failed",
+		logger.Error("extraction backend failed",
 			"event_id", event.ID,
 			"source_id", event.SourceID,
 			"error", err,
@@ -296,14 +295,14 @@ func processEvent(
 		return
 	}
 
-	if !grpcResp.Success {
+	if !resp.Success {
 		logger.Error("extraction returned failure",
 			"event_id", event.ID,
 			"source_id", event.SourceID,
-			"error_message", grpcResp.ErrorMessage,
+			"error_message", resp.ErrorMessage,
 		)
 		record.Success = false
-		record.ErrorMessage = grpcResp.ErrorMessage
+		record.ErrorMessage = resp.ErrorMessage
 		record.DurationMs = time.Since(startTime).Milliseconds()
 		if insertErr := pgStore.InsertExtractionRecord(ctx, record); insertErr != nil {
 			logger.Error("failed to record extraction", "event_id", event.ID, "error", insertErr)
@@ -314,18 +313,18 @@ func processEvent(
 
 	// 6. Parse extracted data and merge into payload.
 	// LLMs often wrap JSON in markdown code fences (```json ... ```); strip those first.
-	cleanedJSON := stripCodeFences(grpcResp.ExtractedJson)
+	cleanedJSON := stripCodeFences(resp.ExtractedJSON)
 	var extractedData map[string]any
 	if err := json.Unmarshal([]byte(cleanedJSON), &extractedData); err != nil {
 		logger.Error("failed to parse extracted json",
 			"event_id", event.ID,
 			"error", err,
 		)
-		extractedData = map[string]any{"raw": grpcResp.ExtractedJson}
+		extractedData = map[string]any{"raw": resp.ExtractedJSON}
 	}
 
 	event.ExtractedData = extractedData
-	event.ExtractionMs = grpcResp.DurationMs
+	event.ExtractionMs = resp.DurationMs
 
 	// Merge "extracted" key into RawBody.
 	var payload map[string]any
@@ -339,17 +338,17 @@ func processEvent(
 	// 7. Record extraction success.
 	record.Success = true
 	record.ExtractedData = extractedData
-	record.TemplateID = grpcResp.TemplateId
-	record.CacheHit = grpcResp.CacheHit
+	record.TemplateID = resp.TemplateID
+	record.CacheHit = resp.CacheHit
 	record.DurationMs = time.Since(startTime).Milliseconds()
 	if err := pgStore.InsertExtractionRecord(ctx, record); err != nil {
 		logger.Error("failed to record extraction", "event_id", event.ID, "error", err)
 	}
 
 	// Upsert template if we got one.
-	if grpcResp.TemplateId != "" {
+	if resp.TemplateID != "" {
 		if err := pgStore.UpsertTemplate(ctx, &models.Template{
-			TemplateID:       grpcResp.TemplateId,
+			TemplateID:       resp.TemplateID,
 			SourceID:         event.SourceID,
 			FileType:         fileType,
 			FieldPositionMap: extractedData,
@@ -364,18 +363,18 @@ func processEvent(
 		"event_id", event.ID,
 		"source_id", event.SourceID,
 		"file_type", fileType,
-		"template_id", grpcResp.TemplateId,
-		"cache_hit", grpcResp.CacheHit,
-		"duration_ms", grpcResp.DurationMs,
+		"template_id", resp.TemplateID,
+		"cache_hit", resp.CacheHit,
+		"duration_ms", resp.DurationMs,
 	)
 
 	if pub != nil {
 		pub.Publish(ctx, pubsub.EventExtractionComplete, map[string]any{
 			"event_id":    event.ID,
 			"source_id":   event.SourceID,
-			"template_id": grpcResp.TemplateId,
-			"cache_hit":   grpcResp.CacheHit,
-			"duration_ms": grpcResp.DurationMs,
+			"template_id": resp.TemplateID,
+			"cache_hit":   resp.CacheHit,
+			"duration_ms": resp.DurationMs,
 			"file_type":   fileType,
 		})
 	}
@@ -422,6 +421,13 @@ func extractFilename(fileURL, eventID string) string {
 		return eventID
 	}
 	return base
+}
+
+// newExtractor picks an extractor backend based on config.
+// Phase 1: only "local" is supported; Phase 2 will add "cloud".
+func newExtractor(cfg *config.Config, logger *slog.Logger) (extraction.Extractor, error) {
+	logger.Info("initializing extractor backend", "backend", "local")
+	return extraction.NewLocalExtractor(cfg.Extractor.GRPCAddr, cfg.Extractor.GRPCTimeoutSeconds)
 }
 
 func enqueueForDelivery(ctx context.Context, logger *slog.Logger, redisQueue *queue.RedisQueue, event *models.WebhookEvent) {
