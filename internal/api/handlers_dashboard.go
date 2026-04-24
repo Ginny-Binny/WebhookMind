@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/gauravfs-14/webhookmind/internal/queue"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -75,30 +76,49 @@ func (s *Server) handleListDLQ(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRetryDLQ(w http.ResponseWriter, r *http.Request) {
 	eventID := chi.URLParam(r, "eventID")
 
-	if err := s.pg.ResolveDLQEntry(r.Context(), eventID); err != nil {
-		http.Error(w, `{"error":"failed to resolve DLQ entry"}`, http.StatusInternalServerError)
+	if s.queue == nil {
+		http.Error(w, `{"error":"queue unavailable"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	// Re-enqueue for delivery if we have the queue.
-	if s.queue != nil && s.scylla != nil {
-		// Fetch event from ScyllaDB to get the raw body.
-		// We need the source_id first — get it from DLQ.
-		// For simplicity, just mark resolved. The user can replay if needed.
+	rawValue, event, err := s.queue.FindDLQEntry(r.Context(), eventID)
+	if err != nil {
+		http.Error(w, `{"error":"failed to read DLQ"}`, http.StatusInternalServerError)
+		return
+	}
+	if event == nil {
+		http.Error(w, `{"error":"DLQ entry not found"}`, http.StatusNotFound)
+		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"status": "resolved"})
+	if err := s.queue.Enqueue(r.Context(), queue.QueueDelivery, event); err != nil {
+		http.Error(w, `{"error":"failed to re-enqueue for delivery"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Best-effort cleanup: remove from Redis DLQ list and mark the Postgres row resolved.
+	// Failures here are logged-but-tolerated because the event is already back in the delivery queue.
+	_ = s.queue.RemoveDLQEntry(r.Context(), rawValue)
+	_ = s.pg.ResolveDLQEntry(r.Context(), eventID)
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "retrying", "event_id": eventID})
 }
 
 func (s *Server) handleDiscardDLQ(w http.ResponseWriter, r *http.Request) {
 	eventID := chi.URLParam(r, "eventID")
 
+	if s.queue != nil {
+		if rawValue, _, err := s.queue.FindDLQEntry(r.Context(), eventID); err == nil && rawValue != "" {
+			_ = s.queue.RemoveDLQEntry(r.Context(), rawValue)
+		}
+	}
+
 	if err := s.pg.ResolveDLQEntry(r.Context(), eventID); err != nil {
-		http.Error(w, `{"error":"failed to discard DLQ entry"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"failed to mark DLQ entry resolved"}`, http.StatusInternalServerError)
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]string{"status": "discarded"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "discarded", "event_id": eventID})
 }
 
 // --- Metrics ---

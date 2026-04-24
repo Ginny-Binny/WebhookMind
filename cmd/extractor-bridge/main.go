@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -312,8 +313,10 @@ func processEvent(
 	}
 
 	// 6. Parse extracted data and merge into payload.
+	// LLMs often wrap JSON in markdown code fences (```json ... ```); strip those first.
+	cleanedJSON := stripCodeFences(grpcResp.ExtractedJson)
 	var extractedData map[string]any
-	if err := json.Unmarshal([]byte(grpcResp.ExtractedJson), &extractedData); err != nil {
+	if err := json.Unmarshal([]byte(cleanedJSON), &extractedData); err != nil {
 		logger.Error("failed to parse extracted json",
 			"event_id", event.ID,
 			"error", err,
@@ -429,4 +432,37 @@ func enqueueForDelivery(ctx context.Context, logger *slog.Logger, redisQueue *qu
 			"error", err,
 		)
 	}
+}
+
+// stripCodeFences removes markdown code fences that LLMs often wrap JSON in,
+// returning the first fenced block's contents or the original string if no fence is present.
+// Handles: "```json\n{...}\n```", "```\n{...}\n```", "{...}\n```\n<more text>", and plain JSON.
+func stripCodeFences(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+
+	// Case 1: already starts with JSON. Trim at the first trailing fence if present
+	// (some LLMs emit valid JSON then more code blocks — we want only the first).
+	if s[0] == '{' || s[0] == '[' {
+		if idx := strings.Index(s, "```"); idx >= 0 {
+			return strings.TrimSpace(s[:idx])
+		}
+		return s
+	}
+
+	// Case 2: starts with a fence. Skip past the opening ``` and optional language tag.
+	start := strings.Index(s, "```")
+	if start < 0 {
+		return s
+	}
+	rest := s[start+3:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	}
+	if end := strings.Index(rest, "```"); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(rest)
 }

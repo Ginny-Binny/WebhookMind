@@ -85,6 +85,34 @@ func (q *RedisQueue) QueueLen(ctx context.Context, key string) (int64, error) {
 	return length, nil
 }
 
+// FindDLQEntry scans the Redis DLQ list and returns (raw JSON value, parsed event)
+// for the first entry whose event ID matches. Both return values are empty if not found.
+// The raw value is needed for LREM, which matches by value not index.
+func (q *RedisQueue) FindDLQEntry(ctx context.Context, eventID string) (string, *models.WebhookEvent, error) {
+	entries, err := q.client.LRange(ctx, QueueDLQ, 0, -1).Result()
+	if err != nil {
+		return "", nil, fmt.Errorf("lrange %s: %w", QueueDLQ, err)
+	}
+	for _, raw := range entries {
+		var event models.WebhookEvent
+		if err := json.Unmarshal([]byte(raw), &event); err != nil {
+			continue
+		}
+		if event.ID == eventID {
+			return raw, &event, nil
+		}
+	}
+	return "", nil, nil
+}
+
+// RemoveDLQEntry removes one occurrence of rawValue from the Redis DLQ list.
+func (q *RedisQueue) RemoveDLQEntry(ctx context.Context, rawValue string) error {
+	if err := q.client.LRem(ctx, QueueDLQ, 1, rawValue).Err(); err != nil {
+		return fmt.Errorf("lrem %s: %w", QueueDLQ, err)
+	}
+	return nil
+}
+
 func (q *RedisQueue) Close() error {
 	return q.client.Close()
 }
