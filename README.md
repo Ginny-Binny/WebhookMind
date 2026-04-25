@@ -51,7 +51,27 @@ Six Go services, a SolidJS dashboard, a C++ extractor, and five Docker container
 - `cmd/sse` (:8081) streams live events to the browser via Server-Sent Events
 - `dashboard/` is the SolidJS front-end (:3000) — real-time stream, schema drift, DLQ, replay
 
-Storage is split between Scylla (high-throughput raw event firehose, 30-day TTL) and Postgres (source configs, rules, inferred schemas, delivery history, replay sessions). MinIO holds extracted file payloads. A llama.cpp container does the LLM-based schema labeling.
+Storage is split between Scylla (high-throughput raw event firehose, 30-day TTL) and Postgres (source configs, rules, inferred schemas, delivery history, replay sessions). MinIO holds extracted file payloads. A llama.cpp container does the LLM-based schema labeling — or you can swap it for a cloud LLM (see below).
+
+## Cloud extraction (optional)
+
+By default, extraction runs through the local llama.cpp container — fully offline, no API keys, but you do have to download a 2 GB model. If you'd rather skip that and use Claude instead, flip three lines in `.env`:
+
+```
+EXTRACTOR_BACKEND=cloud
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-haiku-4-5
+```
+
+Restart goreman. The `webhookmind-extractor` container is no longer needed — PDFs and images go straight to Anthropic's `/v1/messages` API. Audio is the one exception: Claude doesn't do audio, so the cloud backend returns a clear "unsupported" failure for audio file types.
+
+Want both? Cloud as primary with local as a safety net for outages, rate limits, or auth problems:
+
+```
+EXTRACTOR_FALLBACK=local
+```
+
+Cloud calls retry up to 3 times with exponential backoff on transient errors (network, 429 with Retry-After, 5xx). Non-retryable failures (400, 401, 403) fail fast so you see the real issue. If retries exhaust and a fallback is configured, it transparently kicks in for that one event — the pipeline doesn't stall.
 
 ## Why Scylla *and* Postgres
 
@@ -67,4 +87,6 @@ They do different jobs. Scylla absorbs the raw webhook firehose where write volu
 
 **Services die on startup with a ScyllaDB `EOF` error** — Scylla takes 30–45s to cold-boot. The Go services retry for about a minute before giving up. If the error persists past that, the container itself is unhealthy.
 
-**Extractor logs show `invalid character '`'`** — the LLM wrapped its JSON output in a markdown code fence. Extraction still succeeds via cached template; the raw field is where you'd clean up the fence.
+**Cloud extraction returns 401** — bad `ANTHROPIC_API_KEY`. Fail-fast on auth errors is intentional; retries can't fix a wrong key. If you've configured `EXTRACTOR_FALLBACK=local`, extractions will silently route through llama.cpp until you fix the key.
+
+**`grpc` errors right after startup with `EOF` / `server preface`** — extractor-bridge connected to the C++ extractor before its gRPC server was fully ready. Wait for the extractor container to log `extraction engine listening` and `LLM labeler active` before sending webhooks; subsequent calls reconnect cleanly.
