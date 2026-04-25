@@ -425,12 +425,48 @@ func extractFilename(fileURL, eventID string) string {
 	return base
 }
 
-// newExtractor picks an extractor backend based on config.
-// Supported: "local" (gRPC to the C++ extractor container), "cloud" (Anthropic API).
+// newExtractor picks an extractor backend based on config, optionally wrapped in a
+// FallbackExtractor when EXTRACTOR_FALLBACK is set to a different backend.
+// Supported backends: "local" (gRPC to the C++ extractor container), "cloud" (Anthropic API).
 func newExtractor(cfg *config.Config, logger *slog.Logger) (extraction.Extractor, error) {
-	switch strings.ToLower(cfg.Extractor.Backend) {
+	primary, err := buildExtractorBackend(cfg.Extractor.Backend, cfg, logger, "primary")
+	if err != nil {
+		return nil, err
+	}
+
+	fallbackKind := strings.ToLower(cfg.Extractor.Fallback)
+	if fallbackKind == "" || fallbackKind == "none" {
+		return primary, nil
+	}
+	if fallbackKind == strings.ToLower(cfg.Extractor.Backend) {
+		logger.Warn("EXTRACTOR_FALLBACK equals EXTRACTOR_BACKEND, ignoring fallback",
+			"backend", cfg.Extractor.Backend,
+		)
+		return primary, nil
+	}
+
+	fallback, err := buildExtractorBackend(fallbackKind, cfg, logger, "fallback")
+	if err != nil {
+		// Don't kill startup just because the fallback couldn't init — log and continue with primary only.
+		logger.Warn("failed to build extractor fallback, continuing with primary only",
+			"fallback", fallbackKind,
+			"error", err,
+		)
+		return primary, nil
+	}
+
+	logger.Info("extractor fallback configured",
+		"primary", cfg.Extractor.Backend,
+		"fallback", fallbackKind,
+	)
+	return extraction.NewFallbackExtractor(primary, fallback, logger), nil
+}
+
+func buildExtractorBackend(kind string, cfg *config.Config, logger *slog.Logger, role string) (extraction.Extractor, error) {
+	switch strings.ToLower(kind) {
 	case "cloud":
 		logger.Info("initializing extractor backend",
+			"role", role,
 			"backend", "cloud",
 			"model", cfg.Extractor.AnthropicModel,
 		)
@@ -441,10 +477,10 @@ func newExtractor(cfg *config.Config, logger *slog.Logger) (extraction.Extractor
 			logger,
 		)
 	case "local", "":
-		logger.Info("initializing extractor backend", "backend", "local")
+		logger.Info("initializing extractor backend", "role", role, "backend", "local")
 		return extraction.NewLocalExtractor(cfg.Extractor.GRPCAddr, cfg.Extractor.GRPCTimeoutSeconds)
 	default:
-		return nil, fmt.Errorf("unknown EXTRACTOR_BACKEND %q (expected 'local' or 'cloud')", cfg.Extractor.Backend)
+		return nil, fmt.Errorf("unknown extractor backend %q (expected 'local' or 'cloud')", kind)
 	}
 }
 

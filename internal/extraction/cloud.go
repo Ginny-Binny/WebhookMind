@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -256,10 +258,60 @@ func buildAnthropicRequest(model, fileType string, fileBytes []byte, mediaType s
 	return json.Marshal(reqBody)
 }
 
+// callAnthropic wraps the single-shot call with bounded exponential backoff on transient failures.
+// Retryable: network errors, 429 (honoring Retry-After), 5xx.
+// Non-retryable: 400, 401, 403, 404 — these fail fast so operators see the real issue.
 func (c *CloudExtractor) callAnthropic(ctx context.Context, body []byte) (string, error) {
+	const maxAttempts = 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		result, classification, err := c.callAnthropicOnce(ctx, body)
+		if err == nil {
+			if attempt > 1 {
+				c.logger.Info("anthropic call succeeded after retry",
+					"attempt", attempt,
+				)
+			}
+			return result, nil
+		}
+
+		lastErr = err
+		if !classification.retryable || attempt == maxAttempts {
+			return "", err
+		}
+
+		delay := classification.retryAfter
+		if delay <= 0 {
+			delay = time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+		}
+
+		c.logger.Warn("anthropic call failed, retrying",
+			"attempt", attempt,
+			"max_attempts", maxAttempts,
+			"wait", delay.String(),
+			"error", err.Error(),
+		)
+
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	return "", lastErr
+}
+
+type callClassification struct {
+	retryable  bool
+	retryAfter time.Duration // from Retry-After header when available; 0 means "use backoff default"
+}
+
+func (c *CloudExtractor) callAnthropicOnce(ctx context.Context, body []byte) (string, callClassification, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("build http request: %w", err)
+		return "", callClassification{retryable: false}, fmt.Errorf("build http request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", c.apiKey)
@@ -267,25 +319,34 @@ func (c *CloudExtractor) callAnthropic(ctx context.Context, body []byte) (string
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("anthropic api call: %w", err)
+		// Transport errors (DNS, connection refused, timeout) are generally retryable
+		// unless the context was cancelled.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", callClassification{retryable: false}, fmt.Errorf("anthropic api call: %w", err)
+		}
+		return "", callClassification{retryable: true}, fmt.Errorf("anthropic api call: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read response: %w", err)
+		return "", callClassification{retryable: true}, fmt.Errorf("read response: %w", err)
 	}
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("anthropic api returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+		class := callClassification{retryable: isRetryableStatus(resp.StatusCode)}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			class.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+		}
+		return "", class, fmt.Errorf("anthropic api returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
 	}
 
 	var parsed anthropicResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return "", callClassification{retryable: false}, fmt.Errorf("parse response: %w", err)
 	}
 	if parsed.Error != nil {
-		return "", fmt.Errorf("anthropic error %s: %s", parsed.Error.Type, parsed.Error.Message)
+		return "", callClassification{retryable: false}, fmt.Errorf("anthropic error %s: %s", parsed.Error.Type, parsed.Error.Message)
 	}
 
 	var buf strings.Builder
@@ -294,7 +355,34 @@ func (c *CloudExtractor) callAnthropic(ctx context.Context, body []byte) (string
 			buf.WriteString(block.Text)
 		}
 	}
-	return buf.String(), nil
+	return buf.String(), callClassification{}, nil
+}
+
+// isRetryableStatus returns true for status codes that represent transient server-side problems.
+// 400/401/403/404 are caller bugs or missing auth — retrying won't help and masks the real issue.
+func isRetryableStatus(code int) bool {
+	if code == http.StatusTooManyRequests {
+		return true
+	}
+	return code >= 500 && code < 600
+}
+
+// parseRetryAfter accepts either a delta-seconds integer or an HTTP-date.
+// Returns 0 if the header is missing or unparseable, signaling "use default backoff".
+func parseRetryAfter(h string) time.Duration {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(h); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(h); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 func truncate(s string, n int) string {

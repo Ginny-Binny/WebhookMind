@@ -51,6 +51,7 @@ type MinIOConfig struct {
 
 type ExtractorConfig struct {
 	Backend             string // "local" | "cloud"
+	Fallback            string // "local" | "cloud" | "none" — secondary backend if the primary fails
 	GRPCAddr            string
 	GRPCTimeoutSeconds  int
 	AnthropicAPIKey     string
@@ -154,6 +155,7 @@ func Load() (*Config, error) {
 		},
 		Extractor: ExtractorConfig{
 			Backend:             envOrDefault("EXTRACTOR_BACKEND", "local"),
+			Fallback:            envOrDefault("EXTRACTOR_FALLBACK", "none"),
 			GRPCAddr:            envOrDefault("EXTRACTOR_GRPC_ADDR", "127.0.0.1:50051"),
 			GRPCTimeoutSeconds:  envOrDefaultInt("EXTRACTOR_GRPC_TIMEOUT_SECONDS", 120),
 			AnthropicAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
