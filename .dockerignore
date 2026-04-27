@@ -1,0 +1,33 @@
+# VCS / IDE
+.git
+.github
+.claude
+.idea
+.vscode
+
+# Local secrets and runtime state
+.env
+.env.compose
+data/
+models/
+.protoc/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.test
+coverage.out
+bin/
+out/
+
+# Frontend
+dashboard/node_modules
+dashboard/dist
+dashboard/.vite
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Plans / docs we don't bake into images
+*.md.bak

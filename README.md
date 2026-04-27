@@ -8,7 +8,44 @@
 
 An unstructured-webhook processor. Point messy payloads at it — JSON, attached PDFs, images, audio — and it extracts the content, infers a schema on the fly, flags drift when payloads change shape, evaluates routing rules, and streams the whole thing to a live dashboard.
 
-## Running it locally
+## Quickest start: `docker compose up`
+
+If you just want to run the whole thing, you need Docker and an Anthropic API key (the default extractor backend uses Claude). Two commands:
+
+```bash
+echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+docker compose up -d
+```
+
+That builds and starts: redis, postgres, scylla, minio + a one-shot migrator that applies all schema, the six Go services, and the dashboard behind nginx.
+
+Wait ~60 seconds for Scylla to cold-boot (the Go services retry until it's ready). Then:
+
+- Dashboard: <http://localhost:3000>
+- Webhook ingestion: <http://localhost:8080/webhook/{source_id}>
+- REST API: <http://localhost:8082>
+- MinIO console (debug bucket browser): <http://localhost:9001> — login `webhookmind` / `webhookmind123`
+
+Send a test webhook:
+
+```bash
+curl -X POST http://localhost:8080/webhook/test-source \
+  -H "Content-Type: application/json" \
+  -d '{"order_id":"TEST-1","amount":500}'
+```
+
+**Want the local llama.cpp extractor instead?** Drop a `llama-3.2-3b-instruct.Q4_K_M.gguf` into `./models/`, then:
+
+```bash
+echo "EXTRACTOR_BACKEND=local" >> .env
+docker compose --profile local-llm up -d
+```
+
+Tear down with `docker compose down` (keeps volumes) or `docker compose down -v` (nukes them).
+
+---
+
+## Running it for development (faster iteration)
 
 You need Docker, Go 1.22+, and Node 20+.
 

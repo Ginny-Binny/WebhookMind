@@ -1,0 +1,275 @@
+# One-command stack for WebhookMind.
+#   Default:                docker compose up -d            (cloud LLM backend)
+#   With local llama.cpp:   docker compose --profile local-llm up -d
+#
+# Required env (in `.env` next to this file):
+#   ANTHROPIC_API_KEY=sk-ant-...          (only if EXTRACTOR_BACKEND=cloud, which is default)
+# Optional:
+#   ANTHROPIC_MODEL=claude-haiku-4-5
+#   EXTRACTOR_BACKEND=cloud|local         (default: cloud)
+#   EXTRACTOR_FALLBACK=none|local|cloud   (default: none)
+
+services:
+  # -------------------- infra --------------------
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: webhookmind
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: webhookmind
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webhookmind -d webhookmind"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  scylla:
+    image: scylladb/scylla:5.4
+    restart: unless-stopped
+    command: ["--smp", "1", "--memory", "1G", "--overprovisioned", "1", "--developer-mode", "1"]
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT release_version FROM system.local' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: webhookmind
+      MINIO_ROOT_PASSWORD: webhookmind123
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9001:9001"   # web console for debugging — bucket browser
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # -------------------- one-shot init --------------------
+
+  migrate-postgres:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: webhookmind
+      PGPASSWORD: password
+      PGDATABASE: webhookmind
+    volumes:
+      - ./migrations/postgres:/migrations:ro
+      - ./migrations/postgres-migrate.sh:/migrate.sh:ro
+    entrypoint: ["/bin/sh", "/migrate.sh"]
+
+  migrate-scylla:
+    build:
+      context: .
+      dockerfile: migrations/Dockerfile.cql
+    restart: "no"
+    depends_on:
+      scylla:
+        condition: service_healthy
+    environment:
+      SCYLLA_HOST: scylla
+    volumes:
+      - ./migrations/scylla:/migrations:ro
+
+  init-minio:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 webhookmind webhookmind123 &&
+      mc mb -p local/webhookmind-files || true &&
+      echo 'minio bucket ready'
+      "
+
+  # -------------------- C++ extractor (opt-in) --------------------
+
+  extractor:
+    profiles: ["local-llm"]
+    build:
+      context: .
+      dockerfile: cpp/Dockerfile
+    restart: unless-stopped
+    environment:
+      EXTRACTOR_LISTEN_ADDR: "0.0.0.0:50051"
+      REDIS_HOST: redis
+      LLAMA_MODEL_PATH: /opt/models/llama-3.2-3b-instruct.Q4_K_M.gguf
+      LLAMA_CONTEXT_SIZE: "2048"
+      LLAMA_MAX_TOKENS: "256"
+    volumes:
+      - ./models:/opt/models:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 90s
+
+  # -------------------- go services --------------------
+
+  ingestion:
+    build:
+      context: .
+      args:
+        SERVICE: ingestion
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment: &go-env
+      REDIS_ADDR: redis:6379
+      POSTGRES_DSN: postgres://webhookmind:password@postgres:5432/webhookmind?sslmode=disable
+      SCYLLA_HOSTS: scylla
+      MINIO_ENDPOINT: minio:9000
+      MINIO_INTERNAL_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: webhookmind
+      MINIO_SECRET_KEY: webhookmind123
+      EXTRACTOR_GRPC_ADDR: extractor:50051
+      EXTRACTOR_BACKEND: ${EXTRACTOR_BACKEND:-cloud}
+      EXTRACTOR_FALLBACK: ${EXTRACTOR_FALLBACK:-none}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "8080:8080"
+
+  orchestrator:
+    build:
+      context: .
+      args:
+        SERVICE: orchestrator
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate-postgres:
+        condition: service_completed_successfully
+    environment: *go-env
+
+  extractor-bridge:
+    build:
+      context: .
+      args:
+        SERVICE: extractor-bridge
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      init-minio:
+        condition: service_completed_successfully
+      migrate-postgres:
+        condition: service_completed_successfully
+    environment: *go-env
+
+  delivery:
+    build:
+      context: .
+      args:
+        SERVICE: delivery
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+      migrate-postgres:
+        condition: service_completed_successfully
+      migrate-scylla:
+        condition: service_completed_successfully
+    environment: *go-env
+
+  api:
+    build:
+      context: .
+      args:
+        SERVICE: api
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+      migrate-postgres:
+        condition: service_completed_successfully
+      migrate-scylla:
+        condition: service_completed_successfully
+    environment: *go-env
+    ports:
+      - "8082:8082"
+
+  sse:
+    build:
+      context: .
+      args:
+        SERVICE: sse
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment: *go-env
+    ports:
+      - "8081:8081"
+
+  # -------------------- frontend --------------------
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - api
+      - sse
+    ports:
+      - "3000:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:
+  postgres-data:
+  scylla-data:
+  minio-data:
