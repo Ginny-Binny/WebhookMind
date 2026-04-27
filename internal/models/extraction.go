@@ -21,13 +21,13 @@ type ExtractionRecord struct {
 
 // Template represents a document fingerprint template for fast extraction.
 type Template struct {
-	TemplateID      string         `json:"template_id"`
-	SourceID        string         `json:"source_id"`
-	FileType        string         `json:"file_type"`
+	TemplateID       string         `json:"template_id"`
+	SourceID         string         `json:"source_id"`
+	FileType         string         `json:"file_type"`
 	FieldPositionMap map[string]any `json:"field_position_map"`
-	SampleEventID   string         `json:"sample_event_id,omitempty"`
-	ConfidenceScore float64        `json:"confidence_score"`
-	UseCount        int64          `json:"use_count"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	SampleEventID    string         `json:"sample_event_id,omitempty"`
+	ConfidenceScore  float64        `json:"confidence_score"`
+	UseCount         int64          `json:"use_count"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
 }

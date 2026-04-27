@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/gauravfs-14/webhookmind/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -241,4 +241,3 @@ func queryInt(r *http.Request, key string, defaultVal int) int {
 	}
 	return n
 }
-

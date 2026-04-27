@@ -19,13 +19,13 @@ type PayloadSchema struct {
 }
 
 type DriftEvent struct {
-	ID           string `json:"id"`
-	EventID      string `json:"event_id"`
-	SourceID     string `json:"source_id"`
-	DriftType    string `json:"drift_type"`    // FIELD_MISSING | TYPE_CHANGED | NEW_FIELD
-	FieldName    string `json:"field_name"`
-	ExpectedType string `json:"expected_type"`
-	ActualType   string `json:"actual_type"`
-	Details      any    `json:"details,omitempty"`
+	ID           string    `json:"id"`
+	EventID      string    `json:"event_id"`
+	SourceID     string    `json:"source_id"`
+	DriftType    string    `json:"drift_type"` // FIELD_MISSING | TYPE_CHANGED | NEW_FIELD
+	FieldName    string    `json:"field_name"`
+	ExpectedType string    `json:"expected_type"`
+	ActualType   string    `json:"actual_type"`
+	Details      any       `json:"details,omitempty"`
 	DetectedAt   time.Time `json:"detected_at"`
 }

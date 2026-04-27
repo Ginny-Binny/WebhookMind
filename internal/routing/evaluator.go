@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
 )
 
 // EvaluateCondition checks if a single condition matches the flattened payload.

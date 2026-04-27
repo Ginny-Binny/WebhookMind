@@ -2,6 +2,10 @@
   <img src="assets/logo.svg" alt="webhookmind" width="340" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/Ginny-Binny/WebhookMind/actions/workflows/ci.yml"><img src="https://github.com/Ginny-Binny/WebhookMind/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+</p>
+
 An unstructured-webhook processor. Point messy payloads at it — JSON, attached PDFs, images, audio — and it extracts the content, infers a schema on the fly, flags drift when payloads change shape, evaluates routing rules, and streams the whole thing to a live dashboard.
 
 ## Running it locally

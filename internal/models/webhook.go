@@ -43,16 +43,16 @@ type Destination struct {
 
 // DeadLetterEntry represents an event that exhausted all delivery retries.
 type DeadLetterEntry struct {
-	ID            string    `json:"id"`
-	EventID       string    `json:"event_id"`
-	SourceID      string    `json:"source_id"`
-	DestinationID string    `json:"destination_id"`
-	RawBody       []byte    `json:"raw_body"`
+	ID            string            `json:"id"`
+	EventID       string            `json:"event_id"`
+	SourceID      string            `json:"source_id"`
+	DestinationID string            `json:"destination_id"`
+	RawBody       []byte            `json:"raw_body"`
 	Headers       map[string]string `json:"headers"`
-	FailedAt      time.Time `json:"failed_at"`
-	FailureReason string    `json:"failure_reason"`
-	Resolved      bool      `json:"resolved"`
-	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
+	FailedAt      time.Time         `json:"failed_at"`
+	FailureReason string            `json:"failure_reason"`
+	Resolved      bool              `json:"resolved"`
+	ResolvedAt    *time.Time        `json:"resolved_at,omitempty"`
 }
 
 // Source represents a registered webhook sender.

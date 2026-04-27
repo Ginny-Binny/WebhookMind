@@ -428,17 +428,17 @@ func (s *PostgresStore) GetDefaultDestinations(ctx context.Context, sourceID str
 // --- Replay Sessions ---
 
 type ReplaySession struct {
-	ID              string     `json:"id"`
-	SourceID        string     `json:"source_id"`
-	DestinationURL  string     `json:"destination_url"`
-	FromTimestamp   time.Time  `json:"from_timestamp"`
-	ToTimestamp     *time.Time `json:"to_timestamp,omitempty"`
-	Status          string     `json:"status"`
-	EventsReplayed  int        `json:"events_replayed"`
-	EventsTotal     *int       `json:"events_total,omitempty"`
-	StartedAt       time.Time  `json:"started_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	InitiatedBy     string     `json:"initiated_by,omitempty"`
+	ID             string     `json:"id"`
+	SourceID       string     `json:"source_id"`
+	DestinationURL string     `json:"destination_url"`
+	FromTimestamp  time.Time  `json:"from_timestamp"`
+	ToTimestamp    *time.Time `json:"to_timestamp,omitempty"`
+	Status         string     `json:"status"`
+	EventsReplayed int        `json:"events_replayed"`
+	EventsTotal    *int       `json:"events_total,omitempty"`
+	StartedAt      time.Time  `json:"started_at"`
+	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	InitiatedBy    string     `json:"initiated_by,omitempty"`
 }
 
 func (s *PostgresStore) CreateReplaySession(ctx context.Context, rs *ReplaySession) (string, error) {
@@ -511,14 +511,14 @@ func (s *PostgresStore) ListSources(ctx context.Context) ([]models.Source, error
 }
 
 type WebhookListItem struct {
-	EventID        string    `json:"event_id"`
-	SourceID       string    `json:"source_id"`
-	ReceivedAt     time.Time `json:"received_at"`
-	StatusCode     int       `json:"status_code"`
-	Success        bool      `json:"success"`
-	DurationMs     int64     `json:"duration_ms"`
-	HasExtraction  bool      `json:"has_extraction"`
-	ExtractionHit  bool      `json:"extraction_cache_hit"`
+	EventID       string    `json:"event_id"`
+	SourceID      string    `json:"source_id"`
+	ReceivedAt    time.Time `json:"received_at"`
+	StatusCode    int       `json:"status_code"`
+	Success       bool      `json:"success"`
+	DurationMs    int64     `json:"duration_ms"`
+	HasExtraction bool      `json:"has_extraction"`
+	ExtractionHit bool      `json:"extraction_cache_hit"`
 }
 
 func (s *PostgresStore) ListWebhooks(ctx context.Context, sourceID string, limit, offset int) ([]WebhookListItem, error) {
