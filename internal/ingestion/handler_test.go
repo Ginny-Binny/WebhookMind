@@ -18,14 +18,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// stubSecretStore is an in-memory SecretStore for tests. Map keyed by source_id.
+type stubSecretStore struct {
+	secrets map[string]string
+	err     error
+}
+
+func (s *stubSecretStore) GetSourceSigningSecret(_ context.Context, sourceID string) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.secrets[sourceID], nil
+}
+
 // newTestHandler boots an in-process miniredis + RedisQueue + Handler with pubsub disabled.
+// secrets may be nil (no source has a secret) and requireSignature defaults to false —
+// preserving the original behavior of tests that predate signature verification.
 func newTestHandler(t *testing.T, maxBodyBytes int64) (*Handler, *queue.RedisQueue, *miniredis.Miniredis, func()) {
+	t.Helper()
+	return newTestHandlerWith(t, maxBodyBytes, nil, false)
+}
+
+func newTestHandlerWith(t *testing.T, maxBodyBytes int64, secrets SecretStore, requireSignature bool) (*Handler, *queue.RedisQueue, *miniredis.Miniredis, func()) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	q, err := queue.NewRedisQueue(mr.Addr(), "", 0)
 	require.NoError(t, err)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewHandler(q, nil /* pub */, logger, maxBodyBytes)
+	h := NewHandler(q, nil /* pub */, secrets, logger, maxBodyBytes, requireSignature)
 	return h, q, mr, func() {
 		_ = q.Close()
 		mr.Close()
@@ -113,6 +133,121 @@ func TestHealthEndpoint(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), `"status":"ok"`)
 }
+
+// --- HMAC signature behavior matrix ---
+
+// Case: source has no secret AND require_signature=false → accept (back-compat for dev/test).
+func TestSignature_UnsignedSource_AllowedByDefault(t *testing.T) {
+	h, _, _, cleanup := newTestHandlerWith(t, 1<<20, &stubSecretStore{secrets: map[string]string{}}, false)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{"k":"v"}`))
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+}
+
+// Case: source has no secret AND require_signature=true → 401 (production gate).
+func TestSignature_UnsignedSource_RejectedWhenRequired(t *testing.T) {
+	h, q, _, cleanup := newTestHandlerWith(t, 1<<20, &stubSecretStore{secrets: map[string]string{}}, true)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{"k":"v"}`))
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	// Nothing should be enqueued.
+	depth, err := q.QueueLen(context.Background(), queue.QueueIncoming)
+	require.NoError(t, err)
+	assert.Zero(t, depth)
+}
+
+// Case: source has a secret AND request is properly signed → accept.
+func TestSignature_SignedSource_ValidSignature_Accepted(t *testing.T) {
+	const secret = "test-source-secret"
+	h, q, _, cleanup := newTestHandlerWith(t, 1<<20,
+		&stubSecretStore{secrets: map[string]string{"test-source": secret}}, false)
+	defer cleanup()
+
+	body := []byte(`{"order_id":"SIGNED-1"}`)
+	header := SignForTest(secret, body, time.Now())
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(string(body)))
+	req.Header.Set("X-Signature", header)
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+
+	got, err := q.Dequeue(context.Background(), queue.QueueIncoming, 500*time.Millisecond)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.JSONEq(t, string(body), string(got.RawBody))
+}
+
+// Case: source has a secret AND header is missing → 401.
+func TestSignature_SignedSource_MissingHeader_Rejected(t *testing.T) {
+	h, q, _, cleanup := newTestHandlerWith(t, 1<<20,
+		&stubSecretStore{secrets: map[string]string{"test-source": "secret"}}, false)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	depth, err := q.QueueLen(context.Background(), queue.QueueIncoming)
+	require.NoError(t, err)
+	assert.Zero(t, depth)
+}
+
+// Case: source has a secret AND signature is wrong → 401.
+func TestSignature_SignedSource_WrongSignature_Rejected(t *testing.T) {
+	const secret = "the-real-secret"
+	h, q, _, cleanup := newTestHandlerWith(t, 1<<20,
+		&stubSecretStore{secrets: map[string]string{"test-source": secret}}, false)
+	defer cleanup()
+
+	body := []byte(`{"x":1}`)
+	// Sign with the wrong key.
+	header := SignForTest("a-different-secret", body, time.Now())
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(string(body)))
+	req.Header.Set("X-Signature", header)
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	depth, err := q.QueueLen(context.Background(), queue.QueueIncoming)
+	require.NoError(t, err)
+	assert.Zero(t, depth)
+}
+
+// Case: secret-store lookup itself fails (e.g., DB transient error) → 500, not enqueued.
+func TestSignature_SecretStoreError_Returns500(t *testing.T) {
+	h, q, _, cleanup := newTestHandlerWith(t, 1<<20,
+		&stubSecretStore{err: errBoom}, false)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	depth, err := q.QueueLen(context.Background(), queue.QueueIncoming)
+	require.NoError(t, err)
+	assert.Zero(t, depth)
+}
+
+var errBoom = stubError("simulated db error")
+
+type stubError string
+
+func (e stubError) Error() string { return string(e) }
+
+// --- end HMAC tests ---
 
 // Sanity check that the WebhookEvent shape we expect is what the queue actually carries.
 func TestEnqueuedEventShape(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/gauravfs-14/webhookmind/internal/ingestion"
 	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
+	"github.com/gauravfs-14/webhookmind/internal/store"
 )
 
 func main() {
@@ -34,6 +35,13 @@ func main() {
 	}
 	defer redisQueue.Close()
 
+	pgStore, err := store.NewPostgresStore(context.Background(), cfg.Postgres.DSN)
+	if err != nil {
+		logger.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pgStore.Close()
+
 	pub, err := pubsub.NewPublisher(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
 	if err != nil {
 		logger.Warn("failed to create pubsub publisher, SSE events disabled", "error", err)
@@ -42,7 +50,14 @@ func main() {
 		defer pub.Close()
 	}
 
-	handler := ingestion.NewHandler(redisQueue, pub, logger, cfg.Ingestion.MaxBodyBytes)
+	handler := ingestion.NewHandler(
+		redisQueue,
+		pub,
+		pgStore,
+		logger,
+		cfg.Ingestion.MaxBodyBytes,
+		cfg.Ingestion.RequireSignature,
+	)
 
 	server := &http.Server{
 		Addr:        fmt.Sprintf("0.0.0.0:%d", cfg.Ingestion.Port),

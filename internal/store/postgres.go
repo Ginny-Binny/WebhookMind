@@ -3,11 +3,13 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
 	"github.com/gauravfs-14/webhookmind/internal/schema"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -486,6 +488,25 @@ func (s *PostgresStore) UpdateReplaySessionProgress(ctx context.Context, session
 }
 
 // --- Dashboard API methods ---
+
+// GetSourceSigningSecret returns the HMAC signing secret for a source, or "" if the
+// source has none (or doesn't exist). Empty string is the canonical "this source
+// doesn't sign" sentinel — callers shouldn't treat absent and empty differently.
+func (s *PostgresStore) GetSourceSigningSecret(ctx context.Context, sourceID string) (string, error) {
+	var secret *string
+	err := s.pool.QueryRow(ctx,
+		`SELECT signing_secret FROM sources WHERE id = $1`, sourceID).Scan(&secret)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("get source signing secret: %w", err)
+	}
+	if secret == nil {
+		return "", nil
+	}
+	return *secret, nil
+}
 
 func (s *PostgresStore) ListSources(ctx context.Context) ([]models.Source, error) {
 	rows, err := s.pool.Query(ctx,

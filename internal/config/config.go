@@ -9,8 +9,9 @@ import (
 )
 
 type IngestionConfig struct {
-	Port         int
-	MaxBodyBytes int64
+	Port             int
+	MaxBodyBytes     int64
+	RequireSignature bool
 }
 
 type OrchestratorConfig struct {
@@ -120,8 +121,9 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Ingestion: IngestionConfig{
-			Port:         envOrDefaultInt("INGESTION_PORT", 8080),
-			MaxBodyBytes: int64(envOrDefaultInt("INGESTION_MAX_BODY_BYTES", 10485760)),
+			Port:             envOrDefaultInt("INGESTION_PORT", 8080),
+			MaxBodyBytes:     int64(envOrDefaultInt("INGESTION_MAX_BODY_BYTES", 10485760)),
+			RequireSignature: envOrDefault("INGESTION_REQUIRE_SIGNATURE", "false") == "true",
 		},
 		Orchestrator: OrchestratorConfig{
 			Workers:             envOrDefaultInt("ORCHESTRATOR_WORKERS", 10),

@@ -1,7 +1,9 @@
 package ingestion
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,19 +16,38 @@ import (
 	"github.com/google/uuid"
 )
 
-type Handler struct {
-	queue        *queue.RedisQueue
-	pub          *pubsub.Publisher
-	logger       *slog.Logger
-	maxBodyBytes int64
+const signatureMaxAge = 5 * time.Minute
+
+// SecretStore is the minimal interface the handler needs to look up per-source signing secrets.
+// Satisfied by *store.PostgresStore. Defined here so tests can inject a stub without touching the DB.
+type SecretStore interface {
+	GetSourceSigningSecret(ctx context.Context, sourceID string) (string, error)
 }
 
-func NewHandler(q *queue.RedisQueue, pub *pubsub.Publisher, logger *slog.Logger, maxBodyBytes int64) *Handler {
+type Handler struct {
+	queue            *queue.RedisQueue
+	pub              *pubsub.Publisher
+	secrets          SecretStore
+	logger           *slog.Logger
+	maxBodyBytes     int64
+	requireSignature bool
+}
+
+func NewHandler(
+	q *queue.RedisQueue,
+	pub *pubsub.Publisher,
+	secrets SecretStore,
+	logger *slog.Logger,
+	maxBodyBytes int64,
+	requireSignature bool,
+) *Handler {
 	return &Handler{
-		queue:        q,
-		pub:          pub,
-		logger:       logger,
-		maxBodyBytes: maxBodyBytes,
+		queue:            q,
+		pub:              pub,
+		secrets:          secrets,
+		logger:           logger,
+		maxBodyBytes:     maxBodyBytes,
+		requireSignature: requireSignature,
 	}
 }
 
@@ -55,6 +76,12 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 		)
 		http.Error(w, `{"error":"failed to read body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Verify HMAC signature (if the source has a secret configured, or if signing is globally required).
+	if !h.checkSignature(w, r, sourceID, body) {
+		// checkSignature has already logged + written the response.
 		return
 	}
 
@@ -109,6 +136,72 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			"source_id", sourceID,
 			"error", err,
 		)
+	}
+}
+
+// checkSignature returns true if the request is allowed through, false if it was rejected
+// (in which case it has already written the 401 response and logged the reason).
+//
+// Behavior matrix:
+//   - secret empty + requireSignature=false  → accept (back-compat for unsigned sources)
+//   - secret empty + requireSignature=true   → 401
+//   - secret set                              → 401 unless X-Signature matches
+func (h *Handler) checkSignature(w http.ResponseWriter, r *http.Request, sourceID string, body []byte) bool {
+	var secret string
+	if h.secrets != nil {
+		var err error
+		secret, err = h.secrets.GetSourceSigningSecret(r.Context(), sourceID)
+		if err != nil {
+			h.logger.Error("failed to look up signing secret",
+				"component", "ingestion",
+				"source_id", sourceID,
+				"error", err,
+			)
+			http.Error(w, `{"error":"failed to verify signature"}`, http.StatusInternalServerError)
+			return false
+		}
+	}
+
+	if secret == "" {
+		if !h.requireSignature {
+			return true // unsigned-source path, dev/test
+		}
+		h.logger.Warn("rejecting unsigned webhook (REQUIRE_SIGNATURE=true)",
+			"component", "ingestion",
+			"source_id", sourceID,
+		)
+		http.Error(w, `{"error":"signature required but source has no secret configured"}`, http.StatusUnauthorized)
+		return false
+	}
+
+	if err := Verify(secret, r.Header.Get("X-Signature"), body, time.Now(), signatureMaxAge); err != nil {
+		h.logger.Warn("signature verification failed",
+			"component", "ingestion",
+			"source_id", sourceID,
+			"reason", classifySignatureError(err),
+		)
+		http.Error(w, `{"error":"signature verification failed"}`, http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+// classifySignatureError returns a short stable string for logging — avoids leaking
+// full error messages while still letting operators tell rejection modes apart.
+func classifySignatureError(err error) string {
+	switch {
+	case errors.Is(err, ErrMissingHeader):
+		return "missing_header"
+	case errors.Is(err, ErrMalformedHeader):
+		return "malformed_header"
+	case errors.Is(err, ErrStaleTimestamp):
+		return "stale_timestamp"
+	case errors.Is(err, ErrSignatureMismatch):
+		return "signature_mismatch"
+	case errors.Is(err, ErrInvalidSecret):
+		return "invalid_secret"
+	default:
+		return "unknown"
 	}
 }
 

@@ -114,6 +114,53 @@ EXTRACTOR_FALLBACK=local
 
 Cloud calls retry up to 3 times with exponential backoff on transient errors (network, 429 with Retry-After, 5xx). Non-retryable failures (400, 401, 403) fail fast so you see the real issue. If retries exhaust and a fallback is configured, it transparently kicks in for that one event — the pipeline doesn't stall.
 
+## Webhook signing (HMAC)
+
+Unsigned webhooks are accepted by default — fine for internal sources you trust. For anything reachable on the public internet, give each source a signing secret:
+
+```sql
+-- inside the postgres container or via psql
+UPDATE sources SET signing_secret = 'a-long-random-string' WHERE id = 'stripe-prod';
+```
+
+From that moment on, any request to `/webhook/stripe-prod` must include an `X-Signature` header in Stripe-style format:
+
+```
+X-Signature: t=<unix_seconds>,v1=<hex_sha256>
+```
+
+Where the signed string is `<t>.<body>` and the algorithm is HMAC-SHA256 with the source's secret. The server rejects with 401 if the header is missing, the timestamp is more than 5 minutes off, or the signature doesn't match (constant-time compared).
+
+Compute one with PowerShell:
+
+```powershell
+$secret = "a-long-random-string"
+$body   = '{"order_id":"OK-1"}'
+$ts     = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$payload = "$ts.$body"
+$hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($secret))
+$sig  = -join ($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($payload)) | ForEach-Object { $_.ToString('x2') })
+curl.exe -X POST http://localhost:8080/webhook/stripe-prod `
+  -H "X-Signature: t=$ts,v1=$sig" `
+  -H "Content-Type: application/json" `
+  -d $body
+```
+
+Or in bash:
+
+```bash
+secret="a-long-random-string"
+body='{"order_id":"OK-1"}'
+ts=$(date +%s)
+sig=$(printf '%s.%s' "$ts" "$body" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $2}')
+curl -X POST http://localhost:8080/webhook/stripe-prod \
+  -H "X-Signature: t=$ts,v1=$sig" \
+  -H "Content-Type: application/json" \
+  -d "$body"
+```
+
+To require *every* webhook to be signed (reject sources that haven't been configured with a secret), set `INGESTION_REQUIRE_SIGNATURE=true` in `.env`.
+
 ## Why Scylla *and* Postgres
 
 They do different jobs. Scylla absorbs the raw webhook firehose where write volume dwarfs read volume. Postgres handles the long-lived relational stuff — source configs, routing rules, inferred schema versions, replay sessions, delivery attempt history — where joins and transactions matter. Trying to do either job with the other DB is painful.
