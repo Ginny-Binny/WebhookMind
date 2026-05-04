@@ -9,9 +9,11 @@ import (
 )
 
 type IngestionConfig struct {
-	Port             int
-	MaxBodyBytes     int64
-	RequireSignature bool
+	Port               int
+	MaxBodyBytes       int64
+	RequireSignature   bool
+	RateLimitPerIP     int // requests per minute, per client IP. 0 disables.
+	RateLimitPerSource int // requests per minute, per source_id. 0 disables.
 }
 
 type OrchestratorConfig struct {
@@ -121,9 +123,11 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		Ingestion: IngestionConfig{
-			Port:             envOrDefaultInt("INGESTION_PORT", 8080),
-			MaxBodyBytes:     int64(envOrDefaultInt("INGESTION_MAX_BODY_BYTES", 10485760)),
-			RequireSignature: envOrDefault("INGESTION_REQUIRE_SIGNATURE", "false") == "true",
+			Port:               envOrDefaultInt("INGESTION_PORT", 8080),
+			MaxBodyBytes:       int64(envOrDefaultInt("INGESTION_MAX_BODY_BYTES", 10485760)),
+			RequireSignature:   envOrDefault("INGESTION_REQUIRE_SIGNATURE", "false") == "true",
+			RateLimitPerIP:     envOrDefaultInt("INGESTION_RATE_LIMIT_PER_IP", 10),      // 10 req/min per client IP — tight demo cap
+			RateLimitPerSource: envOrDefaultInt("INGESTION_RATE_LIMIT_PER_SOURCE", 300), // 300 req/min per source
 		},
 		Orchestrator: OrchestratorConfig{
 			Workers:             envOrDefaultInt("ORCHESTRATOR_WORKERS", 10),

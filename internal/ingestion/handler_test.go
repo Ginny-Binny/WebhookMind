@@ -14,6 +14,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gauravfs-14/webhookmind/internal/models"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
+	"github.com/gauravfs-14/webhookmind/internal/ratelimit"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,9 +47,26 @@ func newTestHandlerWith(t *testing.T, maxBodyBytes int64, secrets SecretStore, r
 	q, err := queue.NewRedisQueue(mr.Addr(), "", 0)
 	require.NoError(t, err)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewHandler(q, nil /* pub */, secrets, logger, maxBodyBytes, requireSignature)
+	h := NewHandler(q, nil /* pub */, secrets, nil /* limiter */, logger, maxBodyBytes, requireSignature)
 	return h, q, mr, func() {
 		_ = q.Close()
+		mr.Close()
+	}
+}
+
+// newTestHandlerWithLimiter is for tests that exercise the rate-limit path.
+func newTestHandlerWithLimiter(t *testing.T, perIP, perSource int) (*Handler, func()) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	q, err := queue.NewRedisQueue(mr.Addr(), "", 0)
+	require.NoError(t, err)
+	rlClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	limiter := ratelimit.NewLimiter(rlClient, perIP, perSource)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewHandler(q, nil, nil, limiter, logger, 1<<20, false)
+	return h, func() {
+		_ = q.Close()
+		_ = rlClient.Close()
 		mr.Close()
 	}
 }
@@ -248,6 +267,78 @@ type stubError string
 func (e stubError) Error() string { return string(e) }
 
 // --- end HMAC tests ---
+
+func TestHandleWebhook_RateLimited(t *testing.T) {
+	// Allow exactly 2 requests/min per IP. The third should get 429.
+	h, cleanup := newTestHandlerWithLimiter(t, 2, 0)
+	defer cleanup()
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+		req.RemoteAddr = "203.0.113.1:5000"
+		rec := httptest.NewRecorder()
+		h.Router().ServeHTTP(rec, req)
+		require.Equal(t, http.StatusAccepted, rec.Code, "request %d should be accepted", i+1)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	req.RemoteAddr = "203.0.113.1:5000"
+	rec := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+	assert.NotEmpty(t, rec.Header().Get("Retry-After"), "Retry-After header must be set on 429")
+	assert.Equal(t, "0", rec.Header().Get("X-RateLimit-Remaining"))
+	assert.Contains(t, rec.Body.String(), `"scope":"ip"`)
+}
+
+func TestHandleWebhook_RateLimitScopedByIP(t *testing.T) {
+	h, cleanup := newTestHandlerWithLimiter(t, 1, 0)
+	defer cleanup()
+
+	// Drain ip-A's quota.
+	req1 := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	req1.RemoteAddr = "10.0.0.1:1234"
+	rec1 := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec1, req1)
+	require.Equal(t, http.StatusAccepted, rec1.Code)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	req2.RemoteAddr = "10.0.0.1:1234"
+	rec2 := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusTooManyRequests, rec2.Code)
+
+	// ip-B has its own bucket.
+	req3 := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	req3.RemoteAddr = "10.0.0.2:1234"
+	rec3 := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec3, req3)
+	assert.Equal(t, http.StatusAccepted, rec3.Code)
+}
+
+func TestHandleWebhook_HonorsXForwardedFor(t *testing.T) {
+	// 1 req/min per IP. Two different XFF values should each get one through.
+	h, cleanup := newTestHandlerWithLimiter(t, 1, 0)
+	defer cleanup()
+
+	// Both requests come from the same RemoteAddr (the Caddy/Traefik proxy), but the
+	// X-Forwarded-For header carries the real client IP — and the limiter should key off
+	// XFF so legitimate users behind the same proxy don't share a quota.
+	req1 := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	req1.RemoteAddr = "172.18.0.5:80"
+	req1.Header.Set("X-Forwarded-For", "198.51.100.10")
+	rec1 := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec1, req1)
+	require.Equal(t, http.StatusAccepted, rec1.Code)
+
+	req2 := httptest.NewRequest(http.MethodPost, "/webhook/test-source", strings.NewReader(`{}`))
+	req2.RemoteAddr = "172.18.0.5:80"
+	req2.Header.Set("X-Forwarded-For", "198.51.100.20")
+	rec2 := httptest.NewRecorder()
+	h.Router().ServeHTTP(rec2, req2)
+	assert.Equal(t, http.StatusAccepted, rec2.Code, "second request from a different XFF should NOT be rate-limited")
+}
 
 // Sanity check that the WebhookEvent shape we expect is what the queue actually carries.
 func TestEnqueuedEventShape(t *testing.T) {

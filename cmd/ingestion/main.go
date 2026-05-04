@@ -14,7 +14,9 @@ import (
 	"github.com/gauravfs-14/webhookmind/internal/ingestion"
 	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
+	"github.com/gauravfs-14/webhookmind/internal/ratelimit"
 	"github.com/gauravfs-14/webhookmind/internal/store"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -50,10 +52,25 @@ func main() {
 		defer pub.Close()
 	}
 
+	// Build the rate limiter using a dedicated Redis client (kept distinct from the queue
+	// connection so rate-limit checks don't fight queue traffic for connection pool slots).
+	rlClient := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	})
+	defer rlClient.Close()
+	limiter := ratelimit.NewLimiter(rlClient, cfg.Ingestion.RateLimitPerIP, cfg.Ingestion.RateLimitPerSource)
+	logger.Info("rate limiter configured",
+		"per_ip_per_minute", cfg.Ingestion.RateLimitPerIP,
+		"per_source_per_minute", cfg.Ingestion.RateLimitPerSource,
+	)
+
 	handler := ingestion.NewHandler(
 		redisQueue,
 		pub,
 		pgStore,
+		limiter,
 		logger,
 		cfg.Ingestion.MaxBodyBytes,
 		cfg.Ingestion.RequireSignature,

@@ -68,6 +68,19 @@ curl -X POST https://your-host/webhook/test-source \
 
 The key gets stripped from stored headers, lives only on the in-flight Redis payload, and is dropped after the API call. Nothing persisted.
 
+## Rate limiting
+
+Per-IP and per-source rate limits sit at the front of the ingestion endpoint, backed by Redis (GCRA algorithm). Defaults: **10 req/min per client IP**, **300 req/min per source**. Over-the-limit requests get `429 Too Many Requests` with `Retry-After` and `X-RateLimit-Remaining: 0` headers — same shape Stripe and GitHub return.
+
+Tune via env (set either to `0` to disable that scope):
+
+```
+INGESTION_RATE_LIMIT_PER_IP=10
+INGESTION_RATE_LIMIT_PER_SOURCE=300
+```
+
+When the service is behind Caddy or another reverse proxy, the limiter keys off `X-Forwarded-For` so legitimate users behind the same proxy each get their own bucket.
+
 ## Webhook signing
 
 Unsigned webhooks are accepted by default. To require signatures on a source:

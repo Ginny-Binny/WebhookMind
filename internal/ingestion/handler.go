@@ -6,13 +6,16 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
 	"github.com/gauravfs-14/webhookmind/internal/pubsub"
 	"github.com/gauravfs-14/webhookmind/internal/queue"
+	"github.com/gauravfs-14/webhookmind/internal/ratelimit"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
@@ -29,6 +32,7 @@ type Handler struct {
 	queue            *queue.RedisQueue
 	pub              *pubsub.Publisher
 	secrets          SecretStore
+	limiter          *ratelimit.Limiter // optional — nil disables rate limiting entirely
 	logger           *slog.Logger
 	maxBodyBytes     int64
 	requireSignature bool
@@ -38,6 +42,7 @@ func NewHandler(
 	q *queue.RedisQueue,
 	pub *pubsub.Publisher,
 	secrets SecretStore,
+	limiter *ratelimit.Limiter,
 	logger *slog.Logger,
 	maxBodyBytes int64,
 	requireSignature bool,
@@ -46,6 +51,7 @@ func NewHandler(
 		queue:            q,
 		pub:              pub,
 		secrets:          secrets,
+		limiter:          limiter,
 		logger:           logger,
 		maxBodyBytes:     maxBodyBytes,
 		requireSignature: requireSignature,
@@ -63,6 +69,11 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	sourceID := chi.URLParam(r, "source_id")
 	if sourceID == "" {
 		http.Error(w, `{"error":"source_id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Rate-limit before HMAC so abusive callers don't waste signature CPU.
+	if !h.checkRateLimit(w, r, sourceID) {
 		return
 	}
 
@@ -148,6 +159,77 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			"error", err,
 		)
 	}
+}
+
+// checkRateLimit returns true if the request can proceed, false if it was rate-limited
+// (in which case it has already written 429 + Retry-After + X-RateLimit-Remaining headers).
+// Rate limiting is fail-open: if Redis is unreachable, we log and let the request through
+// rather than blocking legitimate traffic on infra hiccups.
+func (h *Handler) checkRateLimit(rw http.ResponseWriter, r *http.Request, sourceID string) bool {
+	if h.limiter == nil {
+		return true
+	}
+
+	ip := clientIP(r)
+	if res, err := h.limiter.AllowIP(r.Context(), ip); err != nil {
+		h.logger.Error("rate limit check (ip) failed, allowing request",
+			"component", "ingestion",
+			"ip", ip,
+			"error", err,
+		)
+	} else if !res.Allowed {
+		h.writeRateLimited(rw, "ip", ip, res.RetryAfter)
+		return false
+	}
+
+	if res, err := h.limiter.AllowSource(r.Context(), sourceID); err != nil {
+		h.logger.Error("rate limit check (source) failed, allowing request",
+			"component", "ingestion",
+			"source_id", sourceID,
+			"error", err,
+		)
+	} else if !res.Allowed {
+		h.writeRateLimited(rw, "source", sourceID, res.RetryAfter)
+		return false
+	}
+
+	return true
+}
+
+func (h *Handler) writeRateLimited(rw http.ResponseWriter, scope, key string, retryAfter time.Duration) {
+	secs := int(retryAfter.Seconds())
+	if secs < 1 {
+		secs = 1
+	}
+	h.logger.Warn("rate limit exceeded",
+		"component", "ingestion",
+		"scope", scope,
+		"key", key,
+		"retry_after_seconds", secs,
+	)
+	rw.Header().Set("Retry-After", strconv.Itoa(secs))
+	rw.Header().Set("X-RateLimit-Remaining", "0")
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusTooManyRequests)
+	_, _ = rw.Write([]byte(`{"error":"rate limit exceeded","scope":"` + scope + `"}`))
+}
+
+// clientIP picks the closest-to-the-edge address. Prefers X-Forwarded-For (first hop) when
+// the service is behind a reverse proxy like Caddy or nginx; falls back to RemoteAddr otherwise.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if comma := strings.Index(xff, ","); comma > 0 {
+			return strings.TrimSpace(xff[:comma])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return strings.TrimSpace(xri)
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // checkSignature returns true if the request is allowed through, false if it was rejected

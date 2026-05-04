@@ -5,6 +5,7 @@ go 1.25
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-redis/redis_rate/v10 v10.0.1
 	github.com/gocql/gocql v1.7.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.2
