@@ -19,8 +19,8 @@
 *.swo
 *~
 
-# Claude Code local state
-.claude/settings.local.json
+# Claude Code local state (settings, agents, plans, etc.)
+.claude/
 
 # OS files
 .DS_Store

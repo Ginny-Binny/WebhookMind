@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gauravfs-14/webhookmind/internal/models"
@@ -85,20 +86,30 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Capture all headers.
+	// BYOK: extract the per-request Anthropic API key BEFORE building the headers map so it
+	// never lands in the persisted event. The extractor-bridge picks it up via the transient
+	// APIKeyOverride field on the in-flight queue payload.
+	apiKeyOverride := r.Header.Get("X-Anthropic-Key")
+
+	// Capture all headers, redacting the BYOK key so it doesn't leak into the dashboard
+	// payload view, the Scylla webhook_events row, or any logs.
 	headers := make(map[string]string, len(r.Header))
 	for key, values := range r.Header {
+		if strings.EqualFold(key, "X-Anthropic-Key") {
+			continue
+		}
 		headers[key] = values[0]
 	}
 
 	eventID := uuid.New().String()
 
 	event := &models.WebhookEvent{
-		ID:         eventID,
-		SourceID:   sourceID,
-		ReceivedAt: time.Now().UTC(),
-		RawBody:    body,
-		Headers:    headers,
+		ID:             eventID,
+		SourceID:       sourceID,
+		ReceivedAt:     time.Now().UTC(),
+		RawBody:        body,
+		Headers:        headers,
+		APIKeyOverride: apiKeyOverride,
 	}
 
 	if err := h.queue.Enqueue(r.Context(), queue.QueueIncoming, event); err != nil {

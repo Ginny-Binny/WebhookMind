@@ -31,15 +31,22 @@ type CloudExtractor struct {
 	logger     *slog.Logger
 }
 
+// NewCloudExtractor builds a CloudExtractor.
+//
+// Empty apiKey is allowed — that's the BYOK ("bring your own key") deployment mode where the
+// server itself has no Anthropic credit budget and every webhook must carry an X-Anthropic-Key
+// header. In that mode, Extract() returns a clear error if neither the per-request key nor the
+// server-side key is set. This is what makes the public demo deployment safe to host: you can't
+// be billed for traffic that doesn't include a recruiter's own key.
 func NewCloudExtractor(apiKey, model string, timeoutSeconds int, logger *slog.Logger) (*CloudExtractor, error) {
-	if apiKey == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required for cloud extractor backend")
-	}
 	if model == "" {
 		model = defaultCloudModel
 	}
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 60
+	}
+	if apiKey == "" && logger != nil {
+		logger.Warn("cloud extractor: no server-side ANTHROPIC_API_KEY configured — running in BYOK mode (every request must carry X-Anthropic-Key)")
 	}
 	return &CloudExtractor{
 		apiKey: apiKey,
@@ -61,6 +68,19 @@ func (c *CloudExtractor) Extract(ctx context.Context, req ExtractRequest) (*Extr
 		return &ExtractResponse{
 			Success:      false,
 			ErrorMessage: "audio extraction not supported by cloud backend",
+			DurationMs:   elapsed(),
+		}, nil
+	}
+
+	// Resolve which API key to use for THIS request. Per-request override (BYOK) wins.
+	apiKey := req.APIKey
+	if apiKey == "" {
+		apiKey = c.apiKey
+	}
+	if apiKey == "" {
+		return &ExtractResponse{
+			Success:      false,
+			ErrorMessage: "no Anthropic API key — provide one via X-Anthropic-Key header or set ANTHROPIC_API_KEY on the server",
 			DurationMs:   elapsed(),
 		}, nil
 	}
@@ -90,7 +110,7 @@ func (c *CloudExtractor) Extract(ctx context.Context, req ExtractRequest) (*Extr
 		}, nil
 	}
 
-	extractedText, err := c.callAnthropic(ctx, body)
+	extractedText, err := c.callAnthropic(ctx, apiKey, body)
 	if err != nil {
 		return &ExtractResponse{
 			Success:      false,
@@ -261,12 +281,12 @@ func buildAnthropicRequest(model, fileType string, fileBytes []byte, mediaType s
 // callAnthropic wraps the single-shot call with bounded exponential backoff on transient failures.
 // Retryable: network errors, 429 (honoring Retry-After), 5xx.
 // Non-retryable: 400, 401, 403, 404 — these fail fast so operators see the real issue.
-func (c *CloudExtractor) callAnthropic(ctx context.Context, body []byte) (string, error) {
+func (c *CloudExtractor) callAnthropic(ctx context.Context, apiKey string, body []byte) (string, error) {
 	const maxAttempts = 3
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, classification, err := c.callAnthropicOnce(ctx, body)
+		result, classification, err := c.callAnthropicOnce(ctx, apiKey, body)
 		if err == nil {
 			if attempt > 1 {
 				c.logger.Info("anthropic call succeeded after retry",
@@ -308,13 +328,13 @@ type callClassification struct {
 	retryAfter time.Duration // from Retry-After header when available; 0 means "use backoff default"
 }
 
-func (c *CloudExtractor) callAnthropicOnce(ctx context.Context, body []byte) (string, callClassification, error) {
+func (c *CloudExtractor) callAnthropicOnce(ctx context.Context, apiKey string, body []byte) (string, callClassification, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", callClassification{retryable: false}, fmt.Errorf("build http request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
+	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
 
 	resp, err := c.httpClient.Do(httpReq)

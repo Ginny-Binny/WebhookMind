@@ -280,6 +280,9 @@ func processEvent(
 		SourceID:     event.SourceID,
 		PresignedURL: presignedURL,
 		FileBytes:    fileData,
+		// BYOK override: ingestion stamps this from the X-Anthropic-Key header so
+		// recruiters can hit the live deployment with their own Anthropic credit.
+		APIKey: event.APIKeyOverride,
 	})
 	if err != nil {
 		logger.Error("extraction backend failed",

@@ -73,6 +73,33 @@ func TestParseRetryAfter(t *testing.T) {
 	})
 }
 
+// TestNewCloudExtractor_AllowsEmptyAPIKey confirms BYOK deployment mode is supported —
+// constructing without a server-side key must not error (the live demo VPS runs this way).
+func TestNewCloudExtractor_AllowsEmptyAPIKey(t *testing.T) {
+	c, err := NewCloudExtractor("", "", 0, nil)
+	assert.NoError(t, err)
+	assert.NotNil(t, c)
+}
+
+// TestCloudExtract_NoKeyAvailable confirms that without a server-side key AND without a
+// per-request override, Extract returns a clear non-retryable error rather than silently
+// calling the API with an empty x-api-key header.
+func TestCloudExtract_NoKeyAvailable(t *testing.T) {
+	c, err := NewCloudExtractor("", "", 0, nil)
+	assert.NoError(t, err)
+
+	resp, err := c.Extract(t.Context(), ExtractRequest{
+		EventID:  "evt-1",
+		SourceID: "test-source",
+		FileType: "pdf",
+		// no APIKey, no FileBytes — short-circuits before any HTTP call
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.ErrorMessage, "no Anthropic API key")
+}
+
 func TestInferMediaType(t *testing.T) {
 	tests := []struct {
 		fileType string

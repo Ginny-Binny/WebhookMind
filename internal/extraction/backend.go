@@ -12,6 +12,7 @@ type ExtractRequest struct {
 	FileType     string // "pdf" | "image" | "audio" | "csv" | "xml"
 	PresignedURL string // used by LocalExtractor — the C++ container downloads from this URL
 	FileBytes    []byte // optional; set by caller when the file is already in memory. CloudExtractor prefers this over re-downloading.
+	APIKey       string // optional BYOK override. CloudExtractor uses this if non-empty, else falls back to its construction-time key.
 }
 
 // TranscriptionSegment is a single chunk of transcribed audio.
