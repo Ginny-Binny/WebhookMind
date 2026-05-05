@@ -62,14 +62,33 @@ func (s *Server) handleGetWebhookDetail(w http.ResponseWriter, r *http.Request) 
 	if s.scylla != nil && sourceID != "" {
 		event, scyErr := s.scylla.GetEvent(sourceID, eventID)
 		if scyErr == nil && event != nil {
-			detail.RawBody = event.RawBody
+			// RawBody is a json.RawMessage on WebhookDetail, which requires VALID JSON
+			// — the encoder calls json.compact on it and fails the whole response if the
+			// bytes aren't parseable. That manifests as a Content-Length:0 200 response.
+			// Most webhooks are JSON, but binary uploads (a PDF posted directly) aren't,
+			// and we shouldn't break the dashboard for them. Wrap non-JSON bodies in a
+			// safe envelope so the response always encodes cleanly.
+			if json.Valid(event.RawBody) {
+				detail.RawBody = event.RawBody
+			} else {
+				wrapped, _ := json.Marshal(map[string]any{
+					"_note":      "request body was not valid JSON — wrapped for safe transport",
+					"size_bytes": len(event.RawBody),
+					"base64":     event.RawBody, // Go marshals []byte as base64 inside a string
+				})
+				detail.RawBody = wrapped
+			}
 			if detail.SourceID == "" {
 				detail.SourceID = sourceID
 			}
 		}
 	}
 
-	json.NewEncoder(w).Encode(detail)
+	if err := json.NewEncoder(w).Encode(detail); err != nil {
+		// Surface encode failures in logs instead of silently returning 200 + empty body.
+		// (The wrapping above should prevent it, but defense in depth.)
+		http.Error(w, `{"error":"failed to encode webhook detail"}`, http.StatusInternalServerError)
+	}
 }
 
 // --- DLQ ---

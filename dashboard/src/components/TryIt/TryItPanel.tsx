@@ -155,8 +155,11 @@ const TryItPanel: Component = () => {
       {/* --- In-browser firer --- */}
       <div class="bg-card border border-border rounded-lg p-3 sm:p-4">
         <h3 class="text-sm font-semibold text-white mb-2">Send a test webhook</h3>
-        <p class="text-xs text-muted mb-3">
+        <p class="text-xs text-muted mb-1">
           Edit the JSON below and click Send. Your event will appear on the Stream tab in real time.
+        </p>
+        <p class="text-xs text-muted mb-3">
+          Want to see file extraction? Send a JSON body with a <code class="text-accent">file_url</code> pointing at a PDF/image URL — don't post the file bytes directly. Example: <code class="text-accent">{`{"file_url":"https://example.com/invoice.pdf"}`}</code>
         </p>
         <textarea
           value={payload()}
