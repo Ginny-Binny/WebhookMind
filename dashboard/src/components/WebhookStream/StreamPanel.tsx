@@ -2,7 +2,7 @@ import { type Component, For } from 'solid-js';
 import { webhooks } from '../../stores/webhooks';
 import WebhookCard from './WebhookCard';
 
-const StreamPanel: Component<{ connected: () => boolean }> = (props) => {
+const StreamPanel: Component<{ connected: () => boolean; onTryIt?: () => void }> = (props) => {
   return (
     <div class="flex flex-col h-full">
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
@@ -19,7 +19,20 @@ const StreamPanel: Component<{ connected: () => boolean }> = (props) => {
         </For>
         {webhooks.length === 0 && (
           <div class="text-center text-muted py-12 text-sm">
-            Waiting for webhooks...
+            <p>Waiting for webhooks...</p>
+            {props.onTryIt && (
+              <p class="mt-2">
+                Send your first one in the{' '}
+                <button
+                  type="button"
+                  onClick={props.onTryIt}
+                  class="text-accent hover:underline font-medium"
+                >
+                  Try it
+                </button>{' '}
+                tab →
+              </p>
+            )}
           </div>
         )}
       </div>

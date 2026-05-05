@@ -33,6 +33,12 @@ func (s *stubSecretStore) GetSourceSigningSecret(_ context.Context, sourceID str
 	return s.secrets[sourceID], nil
 }
 
+func (s *stubSecretStore) EnsureSource(_ context.Context, _ string) error {
+	// Tests don't care about source rows landing — the handler treats EnsureSource
+	// as best-effort and proceeds even on error.
+	return nil
+}
+
 // newTestHandler boots an in-process miniredis + RedisQueue + Handler with pubsub disabled.
 // secrets may be nil (no source has a secret) and requireSignature defaults to false —
 // preserving the original behavior of tests that predate signature verification.

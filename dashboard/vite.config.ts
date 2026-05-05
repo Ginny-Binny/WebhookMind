@@ -11,6 +11,7 @@ export default defineConfig({
       '/events': {
         target: 'http://localhost:8081',
       },
+      '/webhook': 'http://localhost:8080',
     },
   },
 })

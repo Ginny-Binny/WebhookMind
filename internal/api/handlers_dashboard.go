@@ -40,6 +40,11 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetWebhookDetail(w http.ResponseWriter, r *http.Request) {
 	eventID := chi.URLParam(r, "eventID")
+	// Optional hint from the dashboard. When the source has no destinations yet
+	// (sandbox demos), Postgres' delivery_attempts is empty so detail.SourceID
+	// stays "" and we'd never find the raw body in Scylla. Letting the caller
+	// supply source_id closes that gap without changing the Scylla schema.
+	hintSourceID := r.URL.Query().Get("source_id")
 
 	detail, err := s.pg.GetWebhookDetail(r.Context(), eventID)
 	if err != nil {
@@ -47,11 +52,20 @@ func (s *Server) handleGetWebhookDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Fetch raw body from ScyllaDB if available.
-	if s.scylla != nil && detail.SourceID != "" {
-		event, err := s.scylla.GetEvent(detail.SourceID, eventID)
-		if err == nil && event != nil {
+	// Use the query-param hint when delivery hasn't populated detail.SourceID yet.
+	sourceID := detail.SourceID
+	if sourceID == "" {
+		sourceID = hintSourceID
+	}
+
+	// Fetch raw body from ScyllaDB if we know the source.
+	if s.scylla != nil && sourceID != "" {
+		event, scyErr := s.scylla.GetEvent(sourceID, eventID)
+		if scyErr == nil && event != nil {
 			detail.RawBody = event.RawBody
+			if detail.SourceID == "" {
+				detail.SourceID = sourceID
+			}
 		}
 	}
 

@@ -489,6 +489,23 @@ func (s *PostgresStore) UpdateReplaySessionProgress(ctx context.Context, session
 
 // --- Dashboard API methods ---
 
+// EnsureSource upserts a row into the sources table. It exists so the ingestion
+// handler can guarantee that downstream foreign keys (payload_schemas, drift_events,
+// destinations, routing_rules) will resolve, even when the source_id is a freshly-
+// generated sandbox ID coming straight from a visitor's browser.
+func (s *PostgresStore) EnsureSource(ctx context.Context, sourceID string) error {
+	if sourceID == "" {
+		return fmt.Errorf("source id is empty")
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO sources (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING`,
+		sourceID)
+	if err != nil {
+		return fmt.Errorf("ensure source: %w", err)
+	}
+	return nil
+}
+
 // GetSourceSigningSecret returns the HMAC signing secret for a source, or "" if the
 // source has none (or doesn't exist). Empty string is the canonical "this source
 // doesn't sign" sentinel — callers shouldn't treat absent and empty differently.

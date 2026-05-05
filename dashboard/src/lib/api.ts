@@ -41,8 +41,12 @@ async function del<T>(path: string): Promise<T> {
 export const fetchSources = () => get<Source[]>('/sources');
 export const fetchWebhooks = (sourceId: string, limit = 50, offset = 0) =>
   get<WebhookListItem[]>(`/sources/${sourceId}/webhooks?limit=${limit}&offset=${offset}`);
-export const fetchWebhookDetail = (eventId: string) =>
-  get<WebhookDetail>(`/webhooks/${eventId}`);
+export const fetchWebhookDetail = (eventId: string, sourceId?: string) =>
+  get<WebhookDetail>(
+    sourceId
+      ? `/webhooks/${eventId}?source_id=${encodeURIComponent(sourceId)}`
+      : `/webhooks/${eventId}`,
+  );
 
 // Schema & Drift
 export const fetchSchema = (sourceId: string) =>

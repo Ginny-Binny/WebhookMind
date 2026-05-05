@@ -22,10 +22,16 @@ import (
 
 const signatureMaxAge = 5 * time.Minute
 
-// SecretStore is the minimal interface the handler needs to look up per-source signing secrets.
-// Satisfied by *store.PostgresStore. Defined here so tests can inject a stub without touching the DB.
+// SecretStore is the minimal interface the handler needs for source-related lookups.
+// Satisfied by *store.PostgresStore. Defined here so tests can inject a stub without
+// touching the DB.
+//
+// EnsureSource is called on every webhook so foreign-key constraints downstream
+// (payload_schemas, drift_events, etc.) resolve cleanly for freshly-arrived
+// sandbox sources that don't yet have a row in the `sources` table.
 type SecretStore interface {
 	GetSourceSigningSecret(ctx context.Context, sourceID string) (string, error)
+	EnsureSource(ctx context.Context, sourceID string) error
 }
 
 type Handler struct {
@@ -121,6 +127,19 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		RawBody:        body,
 		Headers:        headers,
 		APIKeyOverride: apiKeyOverride,
+	}
+
+	// Idempotent upsert so downstream foreign keys (schemas, drift_events) don't fail
+	// for sandbox sources that haven't been pre-registered. Best-effort — if the DB is
+	// flaky we don't want to reject the webhook just because the source row didn't land.
+	if h.secrets != nil {
+		if ensureErr := h.secrets.EnsureSource(r.Context(), sourceID); ensureErr != nil {
+			h.logger.Warn("failed to ensure source row, continuing anyway",
+				"component", "ingestion",
+				"source_id", sourceID,
+				"error", ensureErr,
+			)
+		}
 	}
 
 	if err := h.queue.Enqueue(r.Context(), queue.QueueIncoming, event); err != nil {

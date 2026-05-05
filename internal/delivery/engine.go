@@ -137,6 +137,16 @@ func (e *Engine) deliverEvent(ctx context.Context, event *models.WebhookEvent) {
 		}()
 	}
 
+	// Record end-to-end pipeline latency (received → fully processed by delivery worker).
+	// This populates for every event, even when the source has no destinations configured —
+	// the per-destination HTTP latency below is a separate measurement that only fires when
+	// real deliveries happen.
+	if e.pub != nil {
+		if pipelineMs := time.Since(event.ReceivedAt).Milliseconds(); pipelineMs > 0 {
+			_ = e.pub.RecordLatency(ctx, pipelineMs)
+		}
+	}
+
 	// Resolve destinations via routing rules (falls back to defaults).
 	dests, err := routing.ResolveDestinations(ctx, e.pg, event.SourceID, event.RawBody, e.logger)
 	if err != nil {

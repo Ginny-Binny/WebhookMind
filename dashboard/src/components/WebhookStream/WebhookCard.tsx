@@ -83,7 +83,7 @@ const WebhookCard: Component<{ event: StreamEvent }> = (props) => {
     if (!wasExpanded && !detail()) {
       setLoading(true);
       try {
-        const d = await fetchWebhookDetail(props.event.event_id);
+        const d = await fetchWebhookDetail(props.event.event_id, props.event.source_id);
         setDetail(d);
         // Auto-select the most interesting section
         if (d.extraction?.success) setActiveSection('extraction');

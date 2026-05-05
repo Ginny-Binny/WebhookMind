@@ -2,6 +2,7 @@ import { createSignal, onMount, Show } from 'solid-js';
 import { createSSEConnection } from './lib/sse';
 import { addWebhookReceived, updateWebhookDelivered, markWebhookFailed } from './stores/webhooks';
 import { addDriftAlert } from './stores/alerts';
+import { sandboxSource } from './stores/sandbox';
 import type { SSEWebhookReceived, SSEWebhookDelivered, SSEDrift } from './lib/types';
 
 import StreamPanel from './components/WebhookStream/StreamPanel';
@@ -12,10 +13,12 @@ import LatencyChart from './components/Charts/LatencyChart';
 import DLQPanel from './components/DeliveryLog/DLQPanel';
 import RulesEditor from './components/Routing/RulesEditor';
 import ReplayPanel from './components/Replay/ReplayPanel';
+import TryItPanel from './components/TryIt/TryItPanel';
 
-type Tab = 'stream' | 'schema' | 'dlq' | 'rules' | 'replay' | 'metrics';
+type Tab = 'tryit' | 'stream' | 'schema' | 'dlq' | 'rules' | 'replay' | 'metrics';
 
 const tabs: { id: Tab; label: string }[] = [
+  { id: 'tryit', label: 'Try it' },
   { id: 'stream', label: 'Stream' },
   { id: 'metrics', label: 'Metrics' },
   { id: 'schema', label: 'Schema' },
@@ -25,11 +28,14 @@ const tabs: { id: Tab; label: string }[] = [
 ];
 
 function App() {
-  const [activeTab, setActiveTab] = createSignal<Tab>('stream');
-  const [sourceId] = createSignal('test-source');
+  const [activeTab, setActiveTab] = createSignal<Tab>('tryit');
+  // Per-visitor sandbox source. Replaces the old hardcoded 'test-source' so each
+  // visitor sees only their own events via the SSE source_id filter.
+  const sourceId = sandboxSource;
   const [mobileMenuOpen, setMobileMenuOpen] = createSignal(false);
 
-  const sse = createSSEConnection('/events');
+  // SSE filters server-side by source_id query param — visitors are isolated to their sandbox.
+  const sse = createSSEConnection(`/events?source_id=${sandboxSource()}`);
 
   onMount(() => {
     sse.on<SSEWebhookReceived>('webhook.received', (data) => {
@@ -138,8 +144,11 @@ function App() {
 
       {/* Main Content */}
       <main class="flex-1 overflow-y-auto p-3 md:p-6 min-w-0">
+        <Show when={activeTab() === 'tryit'}>
+          <TryItPanel />
+        </Show>
         <Show when={activeTab() === 'stream'}>
-          <StreamPanel connected={sse.connected} />
+          <StreamPanel connected={sse.connected} onTryIt={() => selectTab('tryit')} />
         </Show>
         <Show when={activeTab() === 'metrics'}>
           <div class="space-y-4">
