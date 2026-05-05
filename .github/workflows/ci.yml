@@ -70,3 +70,66 @@ jobs:
 
       - name: Build (runs tsc + vite, catches type errors)
         run: npm run build
+
+  deploy:
+    name: Deploy to VPS
+    needs: [go-test, dashboard-build]
+    # Only deploy from main branch on direct pushes (not on PRs).
+    # Skips entirely if VPS_HOST secret isn't configured — keeps the workflow
+    # green for forks / contributors who don't have deploy access.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if no VPS secrets configured
+        id: gate
+        env:
+          HAS_HOST: ${{ secrets.VPS_HOST != '' }}
+        run: |
+          if [ "$HAS_HOST" != "true" ]; then
+            echo "VPS_HOST secret not set — skipping deploy"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: SSH + redeploy
+        if: steps.gate.outputs.skip != 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          # Long timeout for the docker build step on first-time-touched services.
+          command_timeout: 15m
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd ~/WebhookMind
+
+            # Stash any locally-modified files (e.g. the docker-compose.yml port-binding
+            # tweak we apply once during initial VPS setup) before pulling, then restore.
+            if ! git diff --quiet; then
+              git stash push -m "ci-deploy-stash" --include-untracked > /dev/null
+              STASHED=1
+            else
+              STASHED=0
+            fi
+
+            git fetch origin main
+            git reset --hard origin/main
+
+            if [ "$STASHED" = "1" ]; then
+              git stash pop || true
+            fi
+
+            # Build and bring up. --remove-orphans keeps things tidy if a service was renamed.
+            docker compose build
+            docker compose up -d --remove-orphans
+
+            # Quick liveness check on the host-bound localhost ports.
+            sleep 5
+            curl -fsS http://127.0.0.1:8190/health > /dev/null && echo "ingestion ✓"
+            curl -fsS http://127.0.0.1:8192/api/health > /dev/null && echo "api ✓"
+            curl -fsS http://127.0.0.1:8193/ > /dev/null && echo "dashboard ✓"
+            echo "deploy complete"

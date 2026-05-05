@@ -6,7 +6,9 @@
   <a href="https://github.com/Ginny-Binny/WebhookMind/actions/workflows/ci.yml"><img src="https://github.com/Ginny-Binny/WebhookMind/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
-A webhook processor for messy payloads. JSON, PDFs, images, audio: drop any of it on the ingestion endpoint and it extracts the content, infers a schema as events accumulate, flags drift, runs routing rules, and delivers downstream with retries. Comes with a live dashboard.
+**Live demo:** [webhookmind.psyduck.in](https://webhookmind.psyduck.in). The Try It tab in the dashboard fires a webhook into your own private sandbox source so visitors don't see each other's events. Bring your own Anthropic key if you want file extraction to actually run; everything else works without one.
+
+I built this because I kept dealing with webhook integrations where the payload could be JSON, a PDF link, an image, and sometimes audio, and the systems consuming them had no way to make sense of any of it. WebhookMind takes whatever you POST at the ingestion endpoint, infers a schema as events accumulate, flags drift when a sender starts shipping new fields, and forwards downstream with retries. The dashboard shows it as it happens.
 
 ## Run it
 
@@ -15,11 +17,13 @@ echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
 docker compose up -d
 ```
 
-That's the setup. First run takes a few minutes to build images; subsequent runs are seconds.
+First boot is a couple of minutes (image builds). After that:
 
-- Dashboard: <http://localhost:3000>
-- Webhook in: `POST http://localhost:8080/webhook/{source_id}`
-- API: <http://localhost:8082>
+- Dashboard at http://localhost:3000
+- Webhooks at `POST http://localhost:8080/webhook/{source_id}`
+- API at http://localhost:8082
+
+Fire one to check it works:
 
 ```bash
 curl -X POST http://localhost:8080/webhook/test-source \
@@ -27,11 +31,13 @@ curl -X POST http://localhost:8080/webhook/test-source \
   -d '{"order_id":"TEST-1","amount":500}'
 ```
 
-To use a local llama.cpp model instead of Claude, drop `llama-3.2-3b-instruct.Q4_K_M.gguf` into `./models/`, set `EXTRACTOR_BACKEND=local` in `.env`, then `docker compose --profile local-llm up -d`. Tear everything down with `docker compose down -v`.
+Refresh the dashboard and the event lands on the Stream tab.
+
+To use the local llama.cpp container instead of Claude, drop a gguf model into `./models/`, set `EXTRACTOR_BACKEND=local` in `.env`, and `docker compose --profile local-llm up -d`. `docker compose down -v` wipes everything.
 
 ### Dev loop
 
-When you're iterating on Go code and want goreman's auto-recompile instead of rebuilding images:
+When you're iterating on Go and want hot-recompile instead of rebuilding images each time:
 
 ```bash
 go install github.com/mattn/goreman@latest
@@ -41,55 +47,44 @@ docker start webhookmind-redis webhookmind-postgres webhookmind-scylla webhookmi
 goreman start
 ```
 
-## Architecture
+## What's running
+
+Six Go services, a SolidJS dashboard, a C++ extractor wrapping llama.cpp + Tesseract OCR + Whisper, plus Redis, Postgres, ScyllaDB, MinIO.
 
 | Service | Port | Job |
 |---|---|---|
-| `cmd/ingestion` | 8080 | accepts webhooks, queues them in Redis, archives raw bodies in Scylla |
-| `cmd/orchestrator` | | routes events between the delivery and extraction queues |
+| `cmd/ingestion` | 8080 | accepts webhooks, queues, archives raw bodies |
+| `cmd/orchestrator` | | routes events to the delivery or extraction queue |
 | `cmd/extractor-bridge` | | downloads referenced files, hands them to the extractor backend |
-| `cmd/delivery` | | POSTs to destinations with backoff retries; failures go to a DLQ |
+| `cmd/delivery` | | POSTs to destinations, retries on failure, DLQ |
 | `cmd/api` | 8082 | REST surface for the dashboard |
-| `cmd/sse` | 8081 | Server-Sent Events feed |
-| `dashboard/` | 3000 | SolidJS frontend |
+| `cmd/sse` | 8081 | live event feed for the dashboard |
+| `dashboard/` | 3000 | SolidJS UI |
 
-Scylla holds the raw event firehose (30-day TTL, write-heavy). Postgres holds everything relational: sources, rules, schemas, delivery history, replay sessions. MinIO stores extracted file blobs. The C++ extractor wraps llama.cpp + Tesseract OCR + Whisper for fully local extraction; cloud mode swaps it for Anthropic.
+Scylla absorbs the raw event firehose with a 30-day TTL. Postgres holds everything relational: sources, rules, inferred schemas, delivery history, replay sessions. MinIO holds the extracted file blobs.
 
-## Bring Your Own Key
+## Bring your own key
 
-The cloud extractor accepts a per-request `X-Anthropic-Key` header that overrides the server's `ANTHROPIC_API_KEY`. Deploy with the env var unset and you have a free public demo: random visitors can't burn your credit, but anyone with their own key can drive a full extraction.
+The cloud extractor takes a per-request `X-Anthropic-Key` header that overrides the server's own `ANTHROPIC_API_KEY`. Deploy with that env var blank and visitors can't bill you, but anyone who brings their own key gets a working extraction. The hosted demo runs in this mode.
 
 ```bash
-curl -X POST https://your-host/webhook/test-source \
+curl -X POST https://webhookmind.psyduck.in/webhook/test-source \
   -H "X-Anthropic-Key: sk-ant-yourkey" \
   -H "Content-Type: application/json" \
   -d '{"file_url":"https://example.com/invoice.pdf"}'
 ```
 
-The key gets stripped from stored headers, lives only on the in-flight Redis payload, and is dropped after the API call. Nothing persisted.
-
-## Rate limiting
-
-Per-IP and per-source rate limits sit at the front of the ingestion endpoint, backed by Redis (GCRA algorithm). Defaults: **10 req/min per client IP**, **300 req/min per source**. Over-the-limit requests get `429 Too Many Requests` with `Retry-After` and `X-RateLimit-Remaining: 0` headers — same shape Stripe and GitHub return.
-
-Tune via env (set either to `0` to disable that scope):
-
-```
-INGESTION_RATE_LIMIT_PER_IP=10
-INGESTION_RATE_LIMIT_PER_SOURCE=300
-```
-
-When the service is behind Caddy or another reverse proxy, the limiter keys off `X-Forwarded-For` so legitimate users behind the same proxy each get their own bucket.
+The key gets stripped from `event.Headers` before the row hits Scylla and only lives on the in-flight Redis payload until the extractor fires. Nothing persists.
 
 ## Webhook signing
 
-Unsigned webhooks are accepted by default. To require signatures on a source:
+Unsigned webhooks are accepted by default. To require signatures on a source, set a secret:
 
 ```sql
 UPDATE sources SET signing_secret = 'random-string' WHERE id = 'stripe-prod';
 ```
 
-Now requests need an `X-Signature: t=<unix>,v1=<hex>` header where `v1 = HMAC-SHA256(secret, "<t>.<body>")`. Stripe-style. Stale timestamps (>5 min) are rejected, comparison is constant-time.
+After that, requests need `X-Signature: t=<unix>,v1=<hex>` where `v1 = HMAC-SHA256(secret, "<t>.<body>")`. Five-minute timestamp window, constant-time compare.
 
 ```bash
 secret="random-string"
@@ -102,12 +97,28 @@ curl -X POST http://localhost:8080/webhook/stripe-prod \
   -d "$body"
 ```
 
-Set `INGESTION_REQUIRE_SIGNATURE=true` to reject every unsigned webhook globally, even on sources without a secret configured.
+Setting `INGESTION_REQUIRE_SIGNATURE=true` rejects every webhook globally unless its source has a secret and the request is signed.
+
+## Rate limits
+
+10 requests per minute per client IP, 300 per minute per source. Backed by Redis using the GCRA algorithm. Over the limit gets `429 Too Many Requests` with `Retry-After` and `X-RateLimit-Remaining` headers. Tune with `INGESTION_RATE_LIMIT_PER_IP` and `INGESTION_RATE_LIMIT_PER_SOURCE`; set either to 0 to disable.
+
+Behind a reverse proxy the limiter keys off `X-Forwarded-For`, so users behind the same proxy each get their own bucket.
+
+## Deploy
+
+`.github/workflows/ci.yml` runs tests, builds the dashboard, and on push to `main` SSHes into the configured VPS to `git reset --hard origin/main && docker compose up -d`. The deploy job skips itself if the `VPS_HOST` secret isn't set, so contributors and PRs from forks see green CI.
+
+To wire it up to your own server, add three repo secrets: `VPS_HOST`, `VPS_USER`, and `VPS_SSH_KEY` (an ed25519 private key whose public half is in the VPS's `authorized_keys`).
 
 ## Troubleshooting
 
-- **`goreman: command not found`** — add `$(go env GOPATH)/bin` to PATH.
-- **Connection refused on Redis / Postgres / Scylla / MinIO** — that container isn't running.
-- **Dashboard stuck on "Disconnected"** — SSE didn't start in time, or the page loaded too early. Refresh.
-- **`gocql: EOF` on startup** — Scylla cold-boot takes 30–45s. Services retry for ~67s before giving up.
-- **Cloud extraction returns 401** — wrong API key. Set `EXTRACTOR_FALLBACK=local` if you want extractions to keep working while you fix it.
+`goreman: command not found` means `$(go env GOPATH)/bin` isn't on PATH.
+
+Connection refused on Redis / Postgres / Scylla / MinIO means that container isn't running.
+
+Dashboard stuck on "Disconnected" usually means SSE didn't come up before the page loaded. Refresh.
+
+`gocql: EOF` on startup is Scylla still cold-booting. Services retry for about a minute.
+
+Cloud extraction returning 401 means a bad API key. If you've set `EXTRACTOR_FALLBACK=local`, extractions silently fall back to llama.cpp while you fix it.
