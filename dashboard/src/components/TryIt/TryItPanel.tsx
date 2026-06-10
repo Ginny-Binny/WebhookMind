@@ -1,6 +1,19 @@
-import { type Component, createSignal, Show } from 'solid-js';
+import { type Component, createSignal, Show, For } from 'solid-js';
 import { sandboxSource, resetSandbox } from '../../stores/sandbox';
-import { anthropicKey, setAnthropicKey, clearAnthropicKey } from '../../stores/byok';
+import {
+  anthropicKey,
+  openaiKey,
+  provider,
+  model,
+  setAnthropicKey,
+  setOpenaiKey,
+  setProvider,
+  setModel,
+  clearAnthropicKey,
+  clearOpenaiKey,
+  activeKey,
+  type LLMProvider,
+} from '../../stores/byok';
 import CopyButton from './CopyButton';
 
 const SAMPLE_PAYLOAD = `{
@@ -10,12 +23,53 @@ const SAMPLE_PAYLOAD = `{
   "customer": "Demo Co"
 }`;
 
+// Per-provider model catalog. Cheapest model first — that's also the server-side default,
+// so leaving the picker on the first entry sends no X-LLM-Model header.
+const MODELS: Record<LLMProvider, { id: string; label: string }[]> = {
+  anthropic: [
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (cheap/fast)' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
+  ],
+  openai: [
+    { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini (cheap/fast)' },
+    { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
+    { id: 'gpt-4o', label: 'GPT-4o' },
+    { id: 'gpt-4.1', label: 'GPT-4.1' },
+  ],
+};
+
+const PROVIDER_META: Record<LLMProvider, { header: string; placeholder: string; label: string; signupURL: string }> = {
+  anthropic: {
+    header: 'X-Anthropic-Key',
+    placeholder: 'sk-ant-...',
+    label: 'Anthropic',
+    signupURL: 'https://console.anthropic.com/settings/keys',
+  },
+  openai: {
+    header: 'X-OpenAI-Key',
+    placeholder: 'sk-...',
+    label: 'OpenAI',
+    signupURL: 'https://platform.openai.com/api-keys',
+  },
+};
+
 const TryItPanel: Component = () => {
   const [payload, setPayload] = createSignal(SAMPLE_PAYLOAD);
-  const [keyDraft, setKeyDraft] = createSignal(anthropicKey());
+  const [keyDraft, setKeyDraft] = createSignal(activeKey());
   const [keyVisible, setKeyVisible] = createSignal(false);
   const [sending, setSending] = createSignal(false);
   const [response, setResponse] = createSignal<{ ok: boolean; status: number; body: string } | null>(null);
+
+  // Default model for the currently-selected provider (first entry in the catalog).
+  const defaultModel = () => MODELS[provider()][0].id;
+
+  // The effective model that will actually travel on the request — saved override
+  // when it exists, otherwise the provider's default.
+  const effectiveModel = () => model() || defaultModel();
+
+  // Send X-LLM-Model only when the user picked something other than the cheapest default.
+  const shouldSendModel = () => model() !== '' && model() !== defaultModel();
 
   // Fully-qualified webhook URL for display + copy + curl. Origin = wherever the dashboard is served.
   const webhookURL = () => `${window.location.origin}/webhook/${sandboxSource()}`;
@@ -25,8 +79,11 @@ const TryItPanel: Component = () => {
       `curl -X POST ${webhookURL()} \\`,
       `  -H "Content-Type: application/json" \\`,
     ];
-    if (anthropicKey()) {
-      lines.push(`  -H "X-Anthropic-Key: ${anthropicKey()}" \\`);
+    if (activeKey()) {
+      lines.push(`  -H "${PROVIDER_META[provider()].header}: ${activeKey()}" \\`);
+    }
+    if (shouldSendModel()) {
+      lines.push(`  -H "X-LLM-Model: ${effectiveModel()}" \\`);
     }
     lines.push(`  -d '${payload().replace(/\n\s*/g, ' ').trim()}'`);
     return lines.join('\n');
@@ -37,8 +94,11 @@ const TryItPanel: Component = () => {
     setResponse(null);
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (anthropicKey()) {
-        headers['X-Anthropic-Key'] = anthropicKey();
+      if (activeKey()) {
+        headers[PROVIDER_META[provider()].header] = activeKey();
+      }
+      if (shouldSendModel()) {
+        headers['X-LLM-Model'] = effectiveModel();
       }
       const res = await fetch(`/webhook/${sandboxSource()}`, {
         method: 'POST',
@@ -59,19 +119,32 @@ const TryItPanel: Component = () => {
   };
 
   const handleSaveKey = () => {
-    setAnthropicKey(keyDraft());
+    if (provider() === 'openai') {
+      setOpenaiKey(keyDraft());
+    } else {
+      setAnthropicKey(keyDraft());
+    }
   };
 
   const handleForgetKey = () => {
-    clearAnthropicKey();
+    if (provider() === 'openai') {
+      clearOpenaiKey();
+    } else {
+      clearAnthropicKey();
+    }
     setKeyDraft('');
+  };
+
+  const handleProviderChange = (p: LLMProvider) => {
+    setProvider(p);
+    setKeyDraft(p === 'openai' ? openaiKey() : anthropicKey());
+    // Reset model when switching providers — saved value is provider-specific.
+    setModel('');
   };
 
   const handleResetSandbox = () => {
     if (confirm('Generate a new sandbox ID? Your current view will be cleared.')) {
       resetSandbox();
-      // SSE stream auto-reconnects with the new source via the App-level effect; no reload needed.
-      // Webhooks store doesn't auto-clear, but visitor will only see fresh events from now on.
       window.location.reload();
     }
   };
@@ -103,18 +176,39 @@ const TryItPanel: Component = () => {
       {/* --- BYOK --- */}
       <div class="bg-card border border-border rounded-lg p-3 sm:p-4">
         <div class="flex items-center justify-between mb-2">
-          <h3 class="text-sm font-semibold text-white">Bring your own Anthropic key</h3>
-          <Show when={anthropicKey()}>
+          <h3 class="text-sm font-semibold text-white">Bring your own LLM key</h3>
+          <Show when={activeKey()}>
             <span class="text-xs text-success">Saved ✓</span>
           </Show>
         </div>
         <p class="text-xs text-muted mb-3">
-          Optional. Without a key, JSON-only webhooks work fine. With a key set, requests with a <code class="text-accent">file_url</code> can be extracted by Claude.
+          Optional. Without a key, JSON-only webhooks work fine. With a key set, requests with a <code class="text-accent">file_url</code> (PDF, image, or DOCX) can be extracted by the model.
         </p>
+
+        {/* Provider picker */}
+        <div class="flex gap-2 mb-3">
+          <For each={(['anthropic', 'openai'] as LLMProvider[])}>
+            {(p) => (
+              <button
+                type="button"
+                onClick={() => handleProviderChange(p)}
+                class={`text-xs px-3 py-1.5 rounded transition-colors ${
+                  provider() === p
+                    ? 'bg-accent/30 text-accent border border-accent/50'
+                    : 'bg-surface text-muted hover:text-white border border-border'
+                }`}
+              >
+                {PROVIDER_META[p].label}
+              </button>
+            )}
+          </For>
+        </div>
+
+        {/* Key input */}
         <div class="flex flex-col sm:flex-row gap-2">
           <input
             type={keyVisible() ? 'text' : 'password'}
-            placeholder="sk-ant-..."
+            placeholder={PROVIDER_META[provider()].placeholder}
             value={keyDraft()}
             onInput={(e) => setKeyDraft(e.currentTarget.value)}
             class="bg-bg border border-border rounded px-2 py-1.5 text-xs text-white flex-1 font-mono"
@@ -130,12 +224,12 @@ const TryItPanel: Component = () => {
             <button
               type="button"
               onClick={handleSaveKey}
-              disabled={!keyDraft() || keyDraft() === anthropicKey()}
+              disabled={!keyDraft() || keyDraft() === activeKey()}
               class="text-xs px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/40 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
             >
               Save
             </button>
-            <Show when={anthropicKey()}>
+            <Show when={activeKey()}>
               <button
                 type="button"
                 onClick={handleForgetKey}
@@ -146,8 +240,27 @@ const TryItPanel: Component = () => {
             </Show>
           </div>
         </div>
-        <p class="text-xs text-muted mt-2">
-          Stored in your browser only. Never persisted on our server, never logged. The key is sent only as a per-request header on the specific webhook that needs it; the server strips it before storing the event. Source is open at{' '}
+
+        {/* Model picker */}
+        <div class="flex items-center gap-2 mt-3">
+          <label class="text-xs text-muted whitespace-nowrap">Model:</label>
+          <select
+            value={effectiveModel()}
+            onChange={(e) => setModel(e.currentTarget.value === defaultModel() ? '' : e.currentTarget.value)}
+            class="bg-bg border border-border rounded px-2 py-1 text-xs text-white font-mono flex-1"
+          >
+            <For each={MODELS[provider()]}>
+              {(m) => <option value={m.id}>{m.label}</option>}
+            </For>
+          </select>
+        </div>
+
+        <p class="text-xs text-muted mt-3">
+          Stored in your browser only. Never persisted on our server, never logged. The key is sent only as a per-request header on the specific webhook that needs it; the server strips it before storing the event. Get a key from{' '}
+          <a href={PROVIDER_META[provider()].signupURL} target="_blank" rel="noopener" class="text-accent hover:underline">
+            {PROVIDER_META[provider()].label}
+          </a>
+          . Source is open at{' '}
           <a href="https://github.com/Ginny-Binny/WebhookMind" target="_blank" rel="noopener" class="text-accent hover:underline">github.com/Ginny-Binny/WebhookMind</a>.
         </p>
       </div>
@@ -159,7 +272,7 @@ const TryItPanel: Component = () => {
           Edit the JSON below and click Send. Your event will appear on the Stream tab in real time.
         </p>
         <p class="text-xs text-muted mb-3">
-          Want to see file extraction? Send a JSON body with a <code class="text-accent">file_url</code> pointing at a PDF/image URL — don't post the file bytes directly. Example: <code class="text-accent">{`{"file_url":"https://example.com/invoice.pdf"}`}</code>
+          Want to see file extraction? Send a JSON body with a <code class="text-accent">file_url</code> pointing at a PDF, image, or DOCX URL — don't post the file bytes directly. Example: <code class="text-accent">{`{"file_url":"https://example.com/invoice.pdf"}`}</code>
         </p>
         <textarea
           value={payload()}

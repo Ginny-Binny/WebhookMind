@@ -3,9 +3,20 @@ package extraction
 import "bytes"
 
 // DetectFileType detects file type from the first 16 bytes using magic bytes.
+//
+// Returned values: "pdf", "image", "audio", "csv", "xml", "zip", "unknown".
+// "zip" indicates a ZIP-based container (DOCX, XLSX, PPTX, JAR, ...) — the caller
+// should run ClassifyZip on the full file bytes to determine the specific format.
 func DetectFileType(header []byte) string {
 	if len(header) < 4 {
 		return "unknown"
+	}
+
+	// ZIP-based formats (DOCX, XLSX, PPTX, JAR, ...) all start with PK\x03\x04.
+	// We can't tell DOCX from XLSX from just the header — the caller follows up
+	// with ClassifyZip on the full bytes.
+	if bytes.HasPrefix(header, []byte{0x50, 0x4B, 0x03, 0x04}) {
+		return "zip"
 	}
 
 	// PDF: starts with %PDF

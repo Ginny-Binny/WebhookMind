@@ -103,16 +103,31 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// BYOK: extract the per-request Anthropic API key BEFORE building the headers map so it
-	// never lands in the persisted event. The extractor-bridge picks it up via the transient
-	// APIKeyOverride field on the in-flight queue payload.
-	apiKeyOverride := r.Header.Get("X-Anthropic-Key")
+	// BYOK: extract the per-request LLM API key + provider + model BEFORE building the
+	// headers map so they never land in the persisted event. The extractor-bridge picks
+	// them up via the transient *Override fields on the in-flight queue payload.
+	//
+	// Provider is implied by which key header is present. If both are sent, OpenAI wins
+	// (it's the newer path most visitors will be demoing). X-LLM-Model is an optional
+	// per-request model override that applies to whichever provider is selected.
+	anthropicKey := r.Header.Get("X-Anthropic-Key")
+	openaiKey := r.Header.Get("X-OpenAI-Key")
+	modelOverride := r.Header.Get("X-LLM-Model")
 
-	// Capture all headers, redacting the BYOK key so it doesn't leak into the dashboard
+	var apiKeyOverride, providerOverride string
+	if openaiKey != "" {
+		apiKeyOverride, providerOverride = openaiKey, "openai"
+	} else if anthropicKey != "" {
+		apiKeyOverride, providerOverride = anthropicKey, "anthropic"
+	}
+
+	// Capture all headers, redacting BYOK headers so they don't leak into the dashboard
 	// payload view, the Scylla webhook_events row, or any logs.
 	headers := make(map[string]string, len(r.Header))
 	for key, values := range r.Header {
-		if strings.EqualFold(key, "X-Anthropic-Key") {
+		if strings.EqualFold(key, "X-Anthropic-Key") ||
+			strings.EqualFold(key, "X-OpenAI-Key") ||
+			strings.EqualFold(key, "X-LLM-Model") {
 			continue
 		}
 		headers[key] = values[0]
@@ -121,12 +136,14 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	eventID := uuid.New().String()
 
 	event := &models.WebhookEvent{
-		ID:             eventID,
-		SourceID:       sourceID,
-		ReceivedAt:     time.Now().UTC(),
-		RawBody:        body,
-		Headers:        headers,
-		APIKeyOverride: apiKeyOverride,
+		ID:               eventID,
+		SourceID:         sourceID,
+		ReceivedAt:       time.Now().UTC(),
+		RawBody:          body,
+		Headers:          headers,
+		APIKeyOverride:   apiKeyOverride,
+		ProviderOverride: providerOverride,
+		ModelOverride:    modelOverride,
 	}
 
 	// Idempotent upsert so downstream foreign keys (schemas, drift_events) don't fail

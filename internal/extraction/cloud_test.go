@@ -74,18 +74,19 @@ func TestParseRetryAfter(t *testing.T) {
 }
 
 // TestNewCloudExtractor_AllowsEmptyAPIKey confirms BYOK deployment mode is supported —
-// constructing without a server-side key must not error (the live demo VPS runs this way).
+// constructing without server-side keys must not error (the live demo VPS runs this way).
 func TestNewCloudExtractor_AllowsEmptyAPIKey(t *testing.T) {
-	c, err := NewCloudExtractor("", "", 0, nil)
+	c, err := NewCloudExtractor(CloudExtractorOptions{})
 	assert.NoError(t, err)
 	assert.NotNil(t, c)
 }
 
 // TestCloudExtract_NoKeyAvailable confirms that without a server-side key AND without a
 // per-request override, Extract returns a clear non-retryable error rather than silently
-// calling the API with an empty x-api-key header.
+// calling the API with an empty auth header. Default provider is anthropic, so the error
+// message names Anthropic.
 func TestCloudExtract_NoKeyAvailable(t *testing.T) {
-	c, err := NewCloudExtractor("", "", 0, nil)
+	c, err := NewCloudExtractor(CloudExtractorOptions{})
 	assert.NoError(t, err)
 
 	resp, err := c.Extract(t.Context(), ExtractRequest{
@@ -97,7 +98,44 @@ func TestCloudExtract_NoKeyAvailable(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, resp)
 	assert.False(t, resp.Success)
-	assert.Contains(t, resp.ErrorMessage, "no Anthropic API key")
+	assert.Contains(t, resp.ErrorMessage, "no anthropic API key")
+}
+
+// TestCloudExtract_NoKeyAvailable_OpenAI confirms the no-key error names OpenAI when
+// the request explicitly selects the OpenAI provider.
+func TestCloudExtract_NoKeyAvailable_OpenAI(t *testing.T) {
+	c, err := NewCloudExtractor(CloudExtractorOptions{})
+	assert.NoError(t, err)
+
+	resp, err := c.Extract(t.Context(), ExtractRequest{
+		EventID:  "evt-1",
+		SourceID: "test-source",
+		FileType: "pdf",
+		Provider: "openai",
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.ErrorMessage, "no openai API key")
+}
+
+// TestCloudExtract_UnknownProvider confirms a clear error is returned when an
+// unrecognized provider name comes through.
+func TestCloudExtract_UnknownProvider(t *testing.T) {
+	c, err := NewCloudExtractor(CloudExtractorOptions{})
+	assert.NoError(t, err)
+
+	resp, err := c.Extract(t.Context(), ExtractRequest{
+		EventID:  "evt-1",
+		SourceID: "test-source",
+		FileType: "pdf",
+		Provider: "bogus",
+		APIKey:   "sk-test",
+	})
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.False(t, resp.Success)
+	assert.Contains(t, resp.ErrorMessage, "unknown provider")
 }
 
 func TestInferMediaType(t *testing.T) {
@@ -109,6 +147,7 @@ func TestInferMediaType(t *testing.T) {
 		{"image", "image/png"},
 		{"csv", "text/csv"},
 		{"xml", "application/xml"},
+		{"docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
 		{"unknown-stuff", "application/octet-stream"},
 		{"", "application/octet-stream"},
 	}

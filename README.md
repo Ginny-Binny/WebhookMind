@@ -65,16 +65,33 @@ Scylla absorbs the raw event firehose with a 30-day TTL. Postgres holds everythi
 
 ## Bring your own key
 
-The cloud extractor takes a per-request `X-Anthropic-Key` header that overrides the server's own `ANTHROPIC_API_KEY`. Deploy with that env var blank and visitors can't bill you, but anyone who brings their own key gets a working extraction. The hosted demo runs in this mode.
+The cloud extractor speaks to two providers — pick whichever is cheaper or easier to get a key for. Both run through the same `/v1/messages`-style retry loop and emit identically-shaped extraction JSON.
+
+| Provider  | BYOK header        | Supported files                 | Default model       |
+|-----------|--------------------|---------------------------------|---------------------|
+| Anthropic | `X-Anthropic-Key`  | PDF, image, CSV, XML, **DOCX**  | `claude-haiku-4-5`  |
+| OpenAI    | `X-OpenAI-Key`     | PDF, image, CSV, XML, **DOCX**  | `gpt-4.1-mini`      |
+
+The optional `X-LLM-Model` header overrides the default model on a per-request basis. Provider is implied by which key header you send. Deploy with both server-side env vars blank (`ANTHROPIC_API_KEY=` / `OPENAI_API_KEY=`) and visitors can't bill you, but anyone who brings their own key gets a working extraction. The hosted demo runs in this mode.
 
 ```bash
+# Anthropic
 curl -X POST https://webhookmind.psyduck.in/webhook/test-source \
   -H "X-Anthropic-Key: sk-ant-yourkey" \
   -H "Content-Type: application/json" \
   -d '{"file_url":"https://example.com/invoice.pdf"}'
+
+# OpenAI (with optional model override)
+curl -X POST https://webhookmind.psyduck.in/webhook/test-source \
+  -H "X-OpenAI-Key: sk-yourkey" \
+  -H "X-LLM-Model: gpt-4o" \
+  -H "Content-Type: application/json" \
+  -d '{"file_url":"https://example.com/contract.docx"}'
 ```
 
-The key gets stripped from `event.Headers` before the row hits Scylla and only lives on the in-flight Redis payload until the extractor fires. Nothing persists.
+DOCX is unzipped server-side (the body lives in `word/document.xml`) and the resulting plain text is sent to the LLM — neither provider accepts raw `.docx` binaries directly. Structured field extraction still happens at the model.
+
+All BYOK headers get stripped from `event.Headers` before the row hits Scylla and only live on the in-flight Redis payload until the extractor fires. Nothing persists.
 
 ## Webhook signing
 

@@ -9,10 +9,12 @@ type ExtractRequest struct {
 	EventID      string
 	SourceID     string
 	FilePath     string // object path in MinIO
-	FileType     string // "pdf" | "image" | "audio" | "csv" | "xml"
+	FileType     string // "pdf" | "image" | "audio" | "csv" | "xml" | "docx"
 	PresignedURL string // used by LocalExtractor — the C++ container downloads from this URL
 	FileBytes    []byte // optional; set by caller when the file is already in memory. CloudExtractor prefers this over re-downloading.
 	APIKey       string // optional BYOK override. CloudExtractor uses this if non-empty, else falls back to its construction-time key.
+	Provider     string // optional BYOK override: "anthropic" | "openai". Empty = use the CloudExtractor's default provider.
+	Model        string // optional BYOK override: per-request model name. Empty = use the selected provider's default.
 }
 
 // TranscriptionSegment is a single chunk of transcribed audio.

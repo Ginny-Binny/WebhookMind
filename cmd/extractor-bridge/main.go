@@ -211,6 +211,14 @@ func processEvent(
 		headerBytes = headerBytes[:16]
 	}
 	fileType := extraction.DetectFileType(headerBytes)
+
+	// ZIP-based formats (DOCX, XLSX, PPTX, ...) all share the PK\x03\x04 magic; the
+	// header alone can't tell them apart. Inspect the full bytes to refine — today
+	// that means recognizing DOCX; everything else falls back to "unknown".
+	if fileType == "zip" {
+		fileType = extraction.ClassifyZip(fileData)
+	}
+
 	record.FileType = fileType
 
 	if fileType == "unknown" {
@@ -280,9 +288,12 @@ func processEvent(
 		SourceID:     event.SourceID,
 		PresignedURL: presignedURL,
 		FileBytes:    fileData,
-		// BYOK override: ingestion stamps this from the X-Anthropic-Key header so
-		// recruiters can hit the live deployment with their own Anthropic credit.
-		APIKey: event.APIKeyOverride,
+		// BYOK overrides: ingestion stamps these from X-Anthropic-Key / X-OpenAI-Key /
+		// X-LLM-Model headers so recruiters can hit the live deployment with their own
+		// LLM credit.
+		APIKey:   event.APIKeyOverride,
+		Provider: event.ProviderOverride,
+		Model:    event.ModelOverride,
 	})
 	if err != nil {
 		logger.Error("extraction backend failed",
@@ -471,14 +482,19 @@ func buildExtractorBackend(kind string, cfg *config.Config, logger *slog.Logger,
 		logger.Info("initializing extractor backend",
 			"role", role,
 			"backend", "cloud",
-			"model", cfg.Extractor.AnthropicModel,
+			"default_provider", cfg.Extractor.CloudProvider,
+			"anthropic_model", cfg.Extractor.AnthropicModel,
+			"openai_model", cfg.Extractor.OpenAIModel,
 		)
-		return extraction.NewCloudExtractor(
-			cfg.Extractor.AnthropicAPIKey,
-			cfg.Extractor.AnthropicModel,
-			cfg.Extractor.CloudTimeoutSeconds,
-			logger,
-		)
+		return extraction.NewCloudExtractor(extraction.CloudExtractorOptions{
+			AnthropicAPIKey: cfg.Extractor.AnthropicAPIKey,
+			AnthropicModel:  cfg.Extractor.AnthropicModel,
+			OpenAIAPIKey:    cfg.Extractor.OpenAIAPIKey,
+			OpenAIModel:     cfg.Extractor.OpenAIModel,
+			DefaultProvider: cfg.Extractor.CloudProvider,
+			TimeoutSeconds:  cfg.Extractor.CloudTimeoutSeconds,
+			Logger:          logger,
+		})
 	case "local", "":
 		logger.Info("initializing extractor backend", "role", role, "backend", "local")
 		return extraction.NewLocalExtractor(cfg.Extractor.GRPCAddr, cfg.Extractor.GRPCTimeoutSeconds)

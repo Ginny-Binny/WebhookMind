@@ -3,9 +3,12 @@
 #   With local llama.cpp:   docker compose --profile local-llm up -d
 #
 # Required env (in `.env` next to this file):
-#   ANTHROPIC_API_KEY=sk-ant-...          (only if EXTRACTOR_BACKEND=cloud, which is default)
+#   ANTHROPIC_API_KEY=sk-ant-...          (only if EXTRACTOR_BACKEND=cloud and CLOUD_PROVIDER=anthropic, the defaults)
+#   OPENAI_API_KEY=sk-...                 (only if CLOUD_PROVIDER=openai)
 # Optional:
 #   ANTHROPIC_MODEL=claude-haiku-4-5
+#   OPENAI_MODEL=gpt-4.1-mini
+#   CLOUD_PROVIDER=anthropic|openai       (default: anthropic — which provider serves requests with no BYOK override)
 #   EXTRACTOR_BACKEND=cloud|local         (default: cloud)
 #   EXTRACTOR_FALLBACK=none|local|cloud   (default: none)
 
@@ -159,6 +162,9 @@ services:
       EXTRACTOR_FALLBACK: ${EXTRACTOR_FALLBACK:-none}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      CLOUD_PROVIDER: ${CLOUD_PROVIDER:-anthropic}
       INGESTION_REQUIRE_SIGNATURE: ${INGESTION_REQUIRE_SIGNATURE:-false}
       INGESTION_RATE_LIMIT_PER_IP: ${INGESTION_RATE_LIMIT_PER_IP:-10}
       INGESTION_RATE_LIMIT_PER_SOURCE: ${INGESTION_RATE_LIMIT_PER_SOURCE:-300}

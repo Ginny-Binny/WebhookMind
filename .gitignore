@@ -47,3 +47,6 @@ dashboard/dist/
 
 # Stray npm lockfile at repo root (no root package.json exists)
 /package-lock.json
+
+# Local-only docs (status notes, mental-model diagrams — not for the repo)
+docs/

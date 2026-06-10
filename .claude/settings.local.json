@@ -72,7 +72,20 @@
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://invoiceocrtest.com/wp-content/uploads/2021/03/Screenshot-2021-03-22-at-12.37.22.pdf\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://slicedinvoices.com/pdf/wordpress-pdf-invoice-plugin-sample.pdf\")",
       "Bash(curl -s -X POST http://localhost:8080/webhook/test-source -H \"Content-Type: application/json\" -d '{\"\"file_url\"\": \"\"https://slicedinvoices.com/pdf/wordpress-pdf-invoice-plugin-sample.pdf\"\"}')",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "mcp__claude_ai_Excalidraw__read_me",
+      "mcp__claude_ai_Excalidraw__read_checkpoint",
+      "Bash(node /c/Users/gaura/AppData/Local/Temp/wm-diagrams/convert.js \"C:\\\\Users\\\\gaura\\\\AppData\\\\Local\\\\Temp\\\\wm-diagrams\\\\diagram1.json\" \"C:\\\\Users\\\\gaura\\\\Downloads\\\\WebhookMind-Overview.excalidraw\")",
+      "Bash(node gen.js diagram2.json)",
+      "Bash(node convert.js diagram2.json \"C:\\\\Users\\\\gaura\\\\Downloads\\\\WebhookMind-Architecture-Detailed.excalidraw\")",
+      "Bash(node -e \"const a=require\\('./diagram2.json'\\); const b=JSON.parse\\(require\\('fs'\\).readFileSync\\('C:/Users/gaura/Downloads/WebhookMind-Architecture-Detailed.excalidraw','utf8'\\)\\); console.log\\('simplified els:',a.length,'| scene els:',b.elements.length,'| scene type:',b.type\\)\")",
+      "mcp__claude_ai_Excalidraw__create_view",
+      "Bash(node -e ' *)",
+      "Bash(node -e 'const s=JSON.parse\\(require\\(\"fs\"\\).readFileSync\\(\"C:/Users/gaura/Downloads/WebhookMind-Architecture-Detailed.excalidraw\",\"utf8\"\\)\\);console.log\\(\"scene OK -> type=\"+s.type+\" elements=\"+s.elements.length+\" emptyText=\"+s.elements.filter\\(e=>e.type===\"text\"&&e.text===\"\"\\).length\\)')",
+      "PowerShell(Push-Location \"c:\\\\Users\\\\gaura\\\\OneDrive\\\\Desktop\\\\WebhookMind\\\\dashboard\"; npm run build; $code = $LASTEXITCODE; Pop-Location; Write-Output \"EXIT=$code\")",
+      "PowerShell(git add -A)",
+      "PowerShell(git commit -m \"Implemented the OpenAI key support for extraction with anthropic\")",
+      "PowerShell(git push origin main 2>&1; Write-Output \"EXIT=$LASTEXITCODE\")"
     ]
   }
 }

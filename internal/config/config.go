@@ -59,6 +59,9 @@ type ExtractorConfig struct {
 	GRPCTimeoutSeconds  int
 	AnthropicAPIKey     string
 	AnthropicModel      string
+	OpenAIAPIKey        string
+	OpenAIModel         string
+	CloudProvider       string // "anthropic" | "openai" — which provider to use when no BYOK override is sent
 	CloudTimeoutSeconds int
 }
 
@@ -166,6 +169,9 @@ func Load() (*Config, error) {
 			GRPCTimeoutSeconds:  envOrDefaultInt("EXTRACTOR_GRPC_TIMEOUT_SECONDS", 120),
 			AnthropicAPIKey:     os.Getenv("ANTHROPIC_API_KEY"),
 			AnthropicModel:      envOrDefault("ANTHROPIC_MODEL", "claude-haiku-4-5"),
+			OpenAIAPIKey:        os.Getenv("OPENAI_API_KEY"),
+			OpenAIModel:         envOrDefault("OPENAI_MODEL", "gpt-4.1-mini"),
+			CloudProvider:       envOrDefault("CLOUD_PROVIDER", "anthropic"),
 			CloudTimeoutSeconds: envOrDefaultInt("CLOUD_EXTRACTOR_TIMEOUT_SECONDS", 60),
 		},
 		File: FileConfig{

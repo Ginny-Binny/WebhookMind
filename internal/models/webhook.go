@@ -15,11 +15,13 @@ type WebhookEvent struct {
 	ExtractedData map[string]any `json:"extracted_data,omitempty"`
 	ExtractionMs  int64          `json:"extraction_ms,omitempty"`
 	// Transient BYOK override. Populated by ingestion when the request carries an
-	// X-Anthropic-Key header so recruiters can demo the live deployment with their own
-	// API key. Lives only in the in-flight Redis queue payload; Scylla's InsertEvent
-	// does not persist this column, and ingestion strips the header from event.Headers
-	// before it lands anywhere durable.
-	APIKeyOverride string `json:"api_key_override,omitempty"`
+	// X-Anthropic-Key or X-OpenAI-Key header so recruiters can demo the live deployment
+	// with their own API key. Lives only in the in-flight Redis queue payload; Scylla's
+	// InsertEvent does not persist these columns, and ingestion strips the headers from
+	// event.Headers before they land anywhere durable.
+	APIKeyOverride   string `json:"api_key_override,omitempty"`
+	ProviderOverride string `json:"provider_override,omitempty"` // "anthropic" | "openai"
+	ModelOverride    string `json:"model_override,omitempty"`    // per-request model name
 }
 
 // DeliveryAttempt represents one attempt to deliver to one destination.

@@ -3,58 +3,80 @@ package extraction
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 )
 
-const (
-	anthropicEndpoint = "https://api.anthropic.com/v1/messages"
-	anthropicVersion  = "2023-06-01"
-	defaultCloudModel = "claude-haiku-4-5"
-	defaultMaxTokens  = 4096
-)
-
-// CloudExtractor implements the Extractor interface by calling Anthropic's /v1/messages API.
-// Audio is not supported in Phase 2 — callers should fall back to the local backend for audio.
-type CloudExtractor struct {
-	apiKey     string
-	model      string
-	httpClient *http.Client
-	logger     *slog.Logger
+// CloudExtractorOptions configures the multi-provider cloud extractor.
+//
+// Empty AnthropicAPIKey + empty OpenAIAPIKey is allowed — that's the BYOK ("bring your
+// own key") deployment mode where the server has no LLM credit budget and every webhook
+// must carry an X-Anthropic-Key or X-OpenAI-Key header. In that mode, Extract() returns
+// a clear error if neither the per-request key nor a matching server-side key is set.
+// This is what makes the public demo deployment safe to host: you can't be billed for
+// traffic that doesn't include a recruiter's own key.
+type CloudExtractorOptions struct {
+	AnthropicAPIKey string
+	AnthropicModel  string // empty = use provider default
+	OpenAIAPIKey    string
+	OpenAIModel     string // empty = use provider default
+	DefaultProvider string // "anthropic" or "openai" — used when ExtractRequest.Provider is empty
+	TimeoutSeconds  int
+	Logger          *slog.Logger
 }
 
-// NewCloudExtractor builds a CloudExtractor.
+// CloudExtractor implements the Extractor interface by dispatching to one of several
+// LLMProvider implementations (Anthropic, OpenAI). The retry/backoff loop, file download,
+// audio rejection, and DOCX-to-text conversion are owned here; provider implementations
+// only know how to build their own API request shape and parse their own response.
 //
-// Empty apiKey is allowed — that's the BYOK ("bring your own key") deployment mode where the
-// server itself has no Anthropic credit budget and every webhook must carry an X-Anthropic-Key
-// header. In that mode, Extract() returns a clear error if neither the per-request key nor the
-// server-side key is set. This is what makes the public demo deployment safe to host: you can't
-// be billed for traffic that doesn't include a recruiter's own key.
-func NewCloudExtractor(apiKey, model string, timeoutSeconds int, logger *slog.Logger) (*CloudExtractor, error) {
-	if model == "" {
-		model = defaultCloudModel
+// Audio is not supported by either cloud provider in Phase 2 — callers should fall back
+// to the local backend for audio.
+type CloudExtractor struct {
+	providers       map[string]LLMProvider
+	apiKeys         map[string]string // server-side keys, keyed by provider name
+	defaultProvider string
+	httpClient      *http.Client
+	logger          *slog.Logger
+}
+
+// NewCloudExtractor builds a CloudExtractor with both Anthropic and OpenAI providers wired up.
+func NewCloudExtractor(opts CloudExtractorOptions) (*CloudExtractor, error) {
+	if opts.TimeoutSeconds <= 0 {
+		opts.TimeoutSeconds = 60
 	}
-	if timeoutSeconds <= 0 {
-		timeoutSeconds = 60
+	if opts.DefaultProvider == "" {
+		opts.DefaultProvider = "anthropic"
 	}
-	if apiKey == "" && logger != nil {
-		logger.Warn("cloud extractor: no server-side ANTHROPIC_API_KEY configured — running in BYOK mode (every request must carry X-Anthropic-Key)")
+	if opts.DefaultProvider != "anthropic" && opts.DefaultProvider != "openai" {
+		return nil, fmt.Errorf("invalid default provider %q (expected 'anthropic' or 'openai')", opts.DefaultProvider)
 	}
+
+	providers := map[string]LLMProvider{
+		"anthropic": NewAnthropicProvider(opts.AnthropicModel),
+		"openai":    NewOpenAIProvider(opts.OpenAIModel),
+	}
+	apiKeys := map[string]string{
+		"anthropic": opts.AnthropicAPIKey,
+		"openai":    opts.OpenAIAPIKey,
+	}
+
+	if opts.AnthropicAPIKey == "" && opts.OpenAIAPIKey == "" && opts.Logger != nil {
+		opts.Logger.Warn("cloud extractor: no server-side LLM keys configured — running in BYOK mode (every request must carry X-Anthropic-Key or X-OpenAI-Key)")
+	}
+
 	return &CloudExtractor{
-		apiKey: apiKey,
-		model:  model,
+		providers:       providers,
+		apiKeys:         apiKeys,
+		defaultProvider: opts.DefaultProvider,
 		httpClient: &http.Client{
-			Timeout: time.Duration(timeoutSeconds) * time.Second,
+			Timeout: time.Duration(opts.TimeoutSeconds) * time.Second,
 		},
-		logger: logger,
+		logger: opts.Logger,
 	}, nil
 }
 
@@ -62,7 +84,7 @@ func (c *CloudExtractor) Extract(ctx context.Context, req ExtractRequest) (*Extr
 	startTime := time.Now()
 	elapsed := func() int64 { return time.Since(startTime).Milliseconds() }
 
-	// Audio path is unsupported by Claude's content API; return a clear failure so the
+	// Audio path is unsupported by both cloud providers; return a clear failure so the
 	// caller can fall back to the local backend or skip extraction.
 	if req.FileType == "audio" {
 		return &ExtractResponse{
@@ -72,17 +94,37 @@ func (c *CloudExtractor) Extract(ctx context.Context, req ExtractRequest) (*Extr
 		}, nil
 	}
 
-	// Resolve which API key to use for THIS request. Per-request override (BYOK) wins.
+	// Resolve which provider to use for THIS request.
+	providerName := req.Provider
+	if providerName == "" {
+		providerName = c.defaultProvider
+	}
+	provider, ok := c.providers[providerName]
+	if !ok {
+		return &ExtractResponse{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("unknown provider %q (supported: anthropic, openai)", providerName),
+			DurationMs:   elapsed(),
+		}, nil
+	}
+
+	// Resolve which API key to use. Per-request override (BYOK) wins.
 	apiKey := req.APIKey
 	if apiKey == "" {
-		apiKey = c.apiKey
+		apiKey = c.apiKeys[providerName]
 	}
 	if apiKey == "" {
 		return &ExtractResponse{
 			Success:      false,
-			ErrorMessage: "no Anthropic API key — provide one via X-Anthropic-Key header or set ANTHROPIC_API_KEY on the server",
+			ErrorMessage: fmt.Sprintf("no %s API key — provide one via X-%s-Key header or set the server-side key", providerName, providerHeaderName(providerName)),
 			DurationMs:   elapsed(),
 		}, nil
+	}
+
+	// Resolve which model to use. Per-request override wins.
+	model := req.Model
+	if model == "" {
+		model = provider.DefaultModel()
 	}
 
 	// Prefer bytes passed in by the caller (extractor-bridge already downloaded the file).
@@ -101,7 +143,24 @@ func (c *CloudExtractor) Extract(ctx context.Context, req ExtractRequest) (*Extr
 		}
 	}
 
-	body, err := buildAnthropicRequest(c.model, req.FileType, fileBytes, mediaType)
+	// DOCX → text. Neither provider accepts raw .docx as input. We unzip it here and
+	// hand the LLM plain text; structured extraction still happens at the LLM.
+	fileType := req.FileType
+	if fileType == "docx" {
+		text, err := ExtractDocxText(fileBytes)
+		if err != nil {
+			return &ExtractResponse{
+				Success:      false,
+				ErrorMessage: fmt.Sprintf("docx extraction: %v", err),
+				DurationMs:   elapsed(),
+			}, nil
+		}
+		fileBytes = []byte(text)
+		fileType = "text"
+		mediaType = "text/plain"
+	}
+
+	endpoint, body, err := provider.BuildRequest(model, fileType, fileBytes, mediaType)
 	if err != nil {
 		return &ExtractResponse{
 			Success:      false,
@@ -110,7 +169,7 @@ func (c *CloudExtractor) Extract(ctx context.Context, req ExtractRequest) (*Extr
 		}, nil
 	}
 
-	extractedText, err := c.callAnthropic(ctx, apiKey, body)
+	extractedText, err := c.callProvider(ctx, provider, endpoint, apiKey, body)
 	if err != nil {
 		return &ExtractResponse{
 			Success:      false,
@@ -165,131 +224,37 @@ func inferMediaType(fileType string) string {
 		return "text/csv"
 	case "xml":
 		return "application/xml"
+	case "docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 	}
 	return "application/octet-stream"
 }
 
-// Anthropic API request/response shapes — only the fields we use.
-
-type anthropicRequest struct {
-	Model     string                 `json:"model"`
-	MaxTokens int                    `json:"max_tokens"`
-	System    []anthropicSystemBlock `json:"system"`
-	Messages  []anthropicMessage     `json:"messages"`
-}
-
-type anthropicSystemBlock struct {
-	Type         string          `json:"type"`
-	Text         string          `json:"text"`
-	CacheControl *anthropicCache `json:"cache_control,omitempty"`
-}
-
-type anthropicCache struct {
-	Type string `json:"type"`
-}
-
-type anthropicMessage struct {
-	Role    string                  `json:"role"`
-	Content []anthropicContentBlock `json:"content"`
-}
-
-type anthropicContentBlock struct {
-	Type   string           `json:"type"`
-	Text   string           `json:"text,omitempty"`
-	Source *anthropicSource `json:"source,omitempty"`
-}
-
-type anthropicSource struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
-}
-
-type anthropicResponse struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-const extractionSystemPrompt = `You are a document extraction engine. Given a document, identify every structured field present and return them as a single flat JSON object.
-
-Rules:
-- Field names MUST be lowercase snake_case (e.g. "invoice_number", "total_amount").
-- Return ONLY the JSON object. No explanations, no markdown code fences, no prose before or after.
-- Use correct JSON types: numbers for numeric values, booleans for true/false, strings otherwise.
-- For dates, prefer ISO 8601 format when the original format is unambiguous.
-- If the document contains no extractable structured data, return an empty object {}.`
-
-func buildAnthropicRequest(model, fileType string, fileBytes []byte, mediaType string) ([]byte, error) {
-	var content []anthropicContentBlock
-
-	switch fileType {
-	case "pdf":
-		content = append(content, anthropicContentBlock{
-			Type: "document",
-			Source: &anthropicSource{
-				Type:      "base64",
-				MediaType: "application/pdf",
-				Data:      base64.StdEncoding.EncodeToString(fileBytes),
-			},
-		})
-	case "image":
-		content = append(content, anthropicContentBlock{
-			Type: "image",
-			Source: &anthropicSource{
-				Type:      "base64",
-				MediaType: mediaType,
-				Data:      base64.StdEncoding.EncodeToString(fileBytes),
-			},
-		})
-	default:
-		// csv / xml / plain text — send inline.
-		content = append(content, anthropicContentBlock{
-			Type: "text",
-			Text: string(fileBytes),
-		})
+// providerHeaderName maps a provider name to the canonical capitalization used in
+// the BYOK request header (X-Anthropic-Key, X-OpenAI-Key). Only used for error messages.
+func providerHeaderName(provider string) string {
+	switch provider {
+	case "openai":
+		return "OpenAI"
+	case "anthropic":
+		return "Anthropic"
 	}
-
-	content = append(content, anthropicContentBlock{
-		Type: "text",
-		Text: "Extract the structured fields from this document.",
-	})
-
-	reqBody := anthropicRequest{
-		Model:     model,
-		MaxTokens: defaultMaxTokens,
-		System: []anthropicSystemBlock{
-			{
-				Type:         "text",
-				Text:         extractionSystemPrompt,
-				CacheControl: &anthropicCache{Type: "ephemeral"},
-			},
-		},
-		Messages: []anthropicMessage{
-			{Role: "user", Content: content},
-		},
-	}
-
-	return json.Marshal(reqBody)
+	return provider
 }
 
-// callAnthropic wraps the single-shot call with bounded exponential backoff on transient failures.
-// Retryable: network errors, 429 (honoring Retry-After), 5xx.
+// callProvider wraps a single-shot provider call with bounded exponential backoff on
+// transient failures. Retryable: network errors, 429 (honoring Retry-After), 5xx.
 // Non-retryable: 400, 401, 403, 404 — these fail fast so operators see the real issue.
-func (c *CloudExtractor) callAnthropic(ctx context.Context, apiKey string, body []byte) (string, error) {
+func (c *CloudExtractor) callProvider(ctx context.Context, provider LLMProvider, endpoint, apiKey string, body []byte) (string, error) {
 	const maxAttempts = 3
 	var lastErr error
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, classification, err := c.callAnthropicOnce(ctx, apiKey, body)
+		result, classification, err := c.callProviderOnce(ctx, provider, endpoint, apiKey, body)
 		if err == nil {
-			if attempt > 1 {
-				c.logger.Info("anthropic call succeeded after retry",
+			if attempt > 1 && c.logger != nil {
+				c.logger.Info("provider call succeeded after retry",
+					"provider", provider.Name(),
 					"attempt", attempt,
 				)
 			}
@@ -306,12 +271,15 @@ func (c *CloudExtractor) callAnthropic(ctx context.Context, apiKey string, body 
 			delay = time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
 		}
 
-		c.logger.Warn("anthropic call failed, retrying",
-			"attempt", attempt,
-			"max_attempts", maxAttempts,
-			"wait", delay.String(),
-			"error", err.Error(),
-		)
+		if c.logger != nil {
+			c.logger.Warn("provider call failed, retrying",
+				"provider", provider.Name(),
+				"attempt", attempt,
+				"max_attempts", maxAttempts,
+				"wait", delay.String(),
+				"error", err.Error(),
+			)
+		}
 
 		select {
 		case <-time.After(delay):
@@ -323,28 +291,21 @@ func (c *CloudExtractor) callAnthropic(ctx context.Context, apiKey string, body 
 	return "", lastErr
 }
 
-type callClassification struct {
-	retryable  bool
-	retryAfter time.Duration // from Retry-After header when available; 0 means "use backoff default"
-}
-
-func (c *CloudExtractor) callAnthropicOnce(ctx context.Context, apiKey string, body []byte) (string, callClassification, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicEndpoint, bytes.NewReader(body))
+func (c *CloudExtractor) callProviderOnce(ctx context.Context, provider LLMProvider, endpoint, apiKey string, body []byte) (string, callClassification, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", callClassification{retryable: false}, fmt.Errorf("build http request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
-	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	provider.SetAuthHeaders(httpReq, apiKey)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		// Transport errors (DNS, connection refused, timeout) are generally retryable
 		// unless the context was cancelled.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", callClassification{retryable: false}, fmt.Errorf("anthropic api call: %w", err)
+			return "", callClassification{retryable: false}, fmt.Errorf("%s api call: %w", provider.Name(), err)
 		}
-		return "", callClassification{retryable: true}, fmt.Errorf("anthropic api call: %w", err)
+		return "", callClassification{retryable: true}, fmt.Errorf("%s api call: %w", provider.Name(), err)
 	}
 	defer resp.Body.Close()
 
@@ -358,56 +319,12 @@ func (c *CloudExtractor) callAnthropicOnce(ctx context.Context, apiKey string, b
 		if resp.StatusCode == http.StatusTooManyRequests {
 			class.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 		}
-		return "", class, fmt.Errorf("anthropic api returned %d: %s", resp.StatusCode, truncate(string(respBody), 500))
+		return "", class, fmt.Errorf("%s api returned %d: %s", provider.Name(), resp.StatusCode, truncate(string(respBody), 500))
 	}
 
-	var parsed anthropicResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", callClassification{retryable: false}, fmt.Errorf("parse response: %w", err)
+	text, err := provider.ParseResponse(respBody)
+	if err != nil {
+		return "", callClassification{retryable: false}, err
 	}
-	if parsed.Error != nil {
-		return "", callClassification{retryable: false}, fmt.Errorf("anthropic error %s: %s", parsed.Error.Type, parsed.Error.Message)
-	}
-
-	var buf strings.Builder
-	for _, block := range parsed.Content {
-		if block.Type == "text" {
-			buf.WriteString(block.Text)
-		}
-	}
-	return buf.String(), callClassification{}, nil
-}
-
-// isRetryableStatus returns true for status codes that represent transient server-side problems.
-// 400/401/403/404 are caller bugs or missing auth — retrying won't help and masks the real issue.
-func isRetryableStatus(code int) bool {
-	if code == http.StatusTooManyRequests {
-		return true
-	}
-	return code >= 500 && code < 600
-}
-
-// parseRetryAfter accepts either a delta-seconds integer or an HTTP-date.
-// Returns 0 if the header is missing or unparseable, signaling "use default backoff".
-func parseRetryAfter(h string) time.Duration {
-	h = strings.TrimSpace(h)
-	if h == "" {
-		return 0
-	}
-	if secs, err := strconv.Atoi(h); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(h); err == nil {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
+	return text, callClassification{}, nil
 }
