@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	anthropicEndpoint = "https://api.anthropic.com/v1/messages"
-	anthropicVersion  = "2023-06-01"
+	anthropicEndpoint     = "https://api.anthropic.com/v1/messages"
+	anthropicVersion      = "2023-06-01"
 	defaultAnthropicModel = "claude-haiku-4-5"
 )
 

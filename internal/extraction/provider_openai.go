@@ -117,7 +117,7 @@ type openaiRequest struct {
 }
 
 type openaiInputMessage struct {
-	Role    string              `json:"role"`
+	Role    string               `json:"role"`
 	Content []openaiContentBlock `json:"content"`
 }
 
