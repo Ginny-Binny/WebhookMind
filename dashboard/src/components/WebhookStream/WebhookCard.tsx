@@ -64,7 +64,7 @@ const WebhookCard: Component<{ event: StreamEvent }> = (props) => {
   const [expanded, setExpanded] = createSignal(false);
   const [detail, setDetail] = createSignal<WebhookDetail | null>(null);
   const [loading, setLoading] = createSignal(false);
-  const [activeSection, setActiveSection] = createSignal<'payload' | 'extraction' | 'diff' | 'delivery'>('payload');
+  const [activeSection, setActiveSection] = createSignal<'payload' | 'headers' | 'extraction' | 'diff' | 'delivery'>('payload');
 
   onMount(() => {
     animate(cardRef, { opacity: [0, 1], y: [-20, 0] }, { duration: 0.2, easing: 'ease-out' });
@@ -105,6 +105,12 @@ const WebhookCard: Component<{ event: StreamEvent }> = (props) => {
     return parsePayload(d.raw_body);
   };
 
+  const headerFields = () => {
+    const d = detail();
+    if (!d?.headers) return {};
+    return flattenForDisplay(d.headers);
+  };
+
   const diffData = () => {
     const d = detail();
     if (!d?.diff) return null;
@@ -116,6 +122,9 @@ const WebhookCard: Component<{ event: StreamEvent }> = (props) => {
       { id: 'payload', label: 'Payload' },
     ];
     const d = detail();
+    if (d?.headers && Object.keys(d.headers).length > 0) {
+      tabs.push({ id: 'headers', label: 'Headers', badge: String(Object.keys(d.headers).length) });
+    }
     if (d?.extraction) {
       tabs.push({
         id: 'extraction',
@@ -191,6 +200,13 @@ const WebhookCard: Component<{ event: StreamEvent }> = (props) => {
             <Show when={activeSection() === 'payload'}>
               <div class="p-3">
                 <FieldTable fields={payloadFields()} />
+              </div>
+            </Show>
+
+            {/* Headers Section */}
+            <Show when={activeSection() === 'headers'}>
+              <div class="p-3">
+                <FieldTable fields={headerFields()} />
               </div>
             </Show>
 

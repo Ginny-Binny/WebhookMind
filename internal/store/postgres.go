@@ -592,6 +592,7 @@ type WebhookDetail struct {
 	EventID    string                   `json:"event_id"`
 	SourceID   string                   `json:"source_id"`
 	RawBody    json.RawMessage          `json:"raw_body,omitempty"`
+	Headers    map[string]string        `json:"headers,omitempty"`
 	Attempts   []models.DeliveryAttempt `json:"attempts"`
 	Extraction *models.ExtractionRecord `json:"extraction,omitempty"`
 	Diff       json.RawMessage          `json:"diff,omitempty"`

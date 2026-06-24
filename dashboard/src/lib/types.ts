@@ -45,6 +45,7 @@ export interface WebhookDetail {
   event_id: string;
   source_id: string;
   raw_body?: string;
+  headers?: Record<string, string>;
   attempts: DeliveryAttempt[];
   extraction?: ExtractionRecord;
   diff?: DiffData;

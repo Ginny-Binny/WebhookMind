@@ -62,6 +62,9 @@ func (s *Server) handleGetWebhookDetail(w http.ResponseWriter, r *http.Request) 
 	if s.scylla != nil && sourceID != "" {
 		event, scyErr := s.scylla.GetEvent(sourceID, eventID)
 		if scyErr == nil && event != nil {
+			// Surface the stored request headers. BYOK key headers are already
+			// stripped before the event hits Scylla, so this is safe to expose.
+			detail.Headers = event.Headers
 			// RawBody is a json.RawMessage on WebhookDetail, which requires VALID JSON
 			// — the encoder calls json.compact on it and fails the whole response if the
 			// bytes aren't parseable. That manifests as a Content-Length:0 200 response.
